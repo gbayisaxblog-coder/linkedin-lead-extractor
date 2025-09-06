@@ -1,4 +1,3 @@
-// IMPORTANT: UPDATE THIS URL AFTER DEPLOYING TO RAILWAY
 const API_BASE_URL = 'https://linkedin-lead-extractor-production.up.railway.app/api';
 
 let currentFileId = null;
@@ -38,7 +37,7 @@ async function loadFiles() {
     if (!response.ok) throw new Error(`Failed to load files: ${response.status}`);
     
     files = await response.json();
-    console.log('✅ Files loaded:', files);
+    console.log('✅ Files loaded:', files.length);
     
     fileSelect.innerHTML = '<option value="">-- Select File --</option>';
     files.forEach(file => {
@@ -120,7 +119,7 @@ async function extractLinkedInData() {
     return;
   }
   
-  console.log('=== STARTING EXTRACTION ===');
+  console.log('=== STARTING POPUP EXTRACTION ===');
   console.log('Current file ID:', currentFileId);
   console.log('API Base URL:', API_BASE_URL);
   
@@ -143,12 +142,7 @@ async function extractLinkedInData() {
     showSuccess('Step 1: Testing API connection...');
     
     const healthUrl = `${API_BASE_URL.replace('/api', '')}/health`;
-    console.log('Health check URL:', healthUrl);
-    
-    const healthResponse = await fetch(healthUrl, {
-      method: 'GET',
-      headers: { 'Accept': 'application/json' }
-    });
+    const healthResponse = await fetch(healthUrl);
     
     if (!healthResponse.ok) {
       throw new Error(`API not reachable (${healthResponse.status})`);
@@ -173,12 +167,13 @@ async function extractLinkedInData() {
     
     await new Promise(resolve => setTimeout(resolve, 2000));
     
+    console.log('📨 Sending message to content script...');
+    
     const results = await new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
-        reject(new Error('LinkedIn extraction timeout - no response from content script'));
-      }, 180000); // 3 minute timeout
-      
-      console.log('📨 Sending message to content script...');
+        console.error('❌ Timeout waiting for content script');
+        reject(new Error('Content script timeout'));
+      }, 300000); // 5 minute timeout for multiple pages
       
       chrome.tabs.sendMessage(tab.id, { 
         action: 'extractLeads',
@@ -187,24 +182,35 @@ async function extractLinkedInData() {
       }, (response) => {
         clearTimeout(timeout);
         
-        console.log('📨 Content script response:', response);
+        console.log('📨 POPUP RECEIVED RESPONSE FROM CONTENT SCRIPT:');
+        console.log('- Response:', response);
+        console.log('- Success:', response?.success);
+        console.log('- Leads count:', response?.leads?.length);
+        console.log('- Pages processed:', response?.pagesProcessed);
         
         if (chrome.runtime.lastError) {
-          console.error('❌ Runtime error:', chrome.runtime.lastError);
-          reject(new Error(`Content script error: ${chrome.runtime.lastError.message}`));
+          console.error('❌ Chrome runtime error:', chrome.runtime.lastError);
+          reject(new Error(chrome.runtime.lastError.message));
           return;
         }
         
-        if (response && response.success) {
+        if (!response) {
+          console.error('❌ No response from content script');
+          reject(new Error('No response from content script'));
+          return;
+        }
+        
+        if (response.success) {
+          console.log('✅ Content script extraction successful');
           resolve(response);
         } else {
-          reject(new Error(response?.error || 'LinkedIn extraction failed'));
+          console.error('❌ Content script error:', response.error);
+          reject(new Error(response.error));
         }
       });
     });
     
-    console.log('✅ LinkedIn extraction successful:', results);
-    console.log('Extracted leads sample:', results.leads.slice(0, 3));
+    console.log('✅ LinkedIn extraction completed successfully');
     
     if (!results.leads || results.leads.length === 0) {
       showSuccess('No new leads found - all profiles already in database!');
@@ -212,25 +218,23 @@ async function extractLinkedInData() {
     }
     
     // STEP 3: Send to Database
-    console.log(`📤 Step 3: Sending ${results.leads.length} leads to database...`);
+    console.log(`📤 Step 3: Sending ${results.leads.length} leads to backend database...`);
     showSuccess(`Step 3: Sending ${results.leads.length} leads to database...`);
     
-    const requestBody = {
+    const requestPayload = {
       leads: results.leads,
       fileId: currentFileId,
       fileName: fileSelect.options[fileSelect.selectedIndex].text,
       userId: 'chrome_extension_user'
     };
     
-    console.log('📦 Request payload preview:', {
-      leadsCount: requestBody.leads.length,
-      fileId: requestBody.fileId,
-      fileName: requestBody.fileName,
-      sampleLead: requestBody.leads[0]
-    });
+    console.log('📦 REQUEST PAYLOAD:');
+    console.log('- Leads count:', requestPayload.leads.length);
+    console.log('- File ID:', requestPayload.fileId);
+    console.log('- Sample lead:', requestPayload.leads[0]);
     
     const extractUrl = `${API_BASE_URL}/extraction/extract`;
-    console.log('Extract URL:', extractUrl);
+    console.log('📡 Sending POST to:', extractUrl);
     
     const response = await fetch(extractUrl, {
       method: 'POST',
@@ -238,53 +242,39 @@ async function extractLinkedInData() {
         'Content-Type': 'application/json',
         'Accept': 'application/json'
       },
-      body: JSON.stringify(requestBody)
+      body: JSON.stringify(requestPayload)
     });
     
-    console.log(`📡 Response status: ${response.status}`);
-    console.log('📡 Response headers:', Object.fromEntries(response.headers.entries()));
+    console.log(`📡 Backend response status: ${response.status}`);
     
     if (!response.ok) {
       const errorText = await response.text();
-      console.error('❌ Server error response:', errorText);
-      throw new Error(`Database save failed (${response.status}): ${errorText}`);
+      console.error('❌ Backend error:', errorText);
+      throw new Error(`Backend error (${response.status}): ${errorText}`);
     }
     
     const result = await response.json();
-    console.log('✅ Database save successful:', result);
+    console.log('✅ BACKEND RESPONSE SUCCESS:', result);
     
-    // STEP 4: Verify Database Save
+    // STEP 4: Verify Save
     console.log('🔍 Step 4: Verifying database save...');
     showSuccess('Step 4: Verifying database save...');
     
-    await new Promise(resolve => setTimeout(resolve, 3000)); // Wait 3 seconds
+    await new Promise(resolve => setTimeout(resolve, 3000));
     
     const verifyResponse = await fetch(`${API_BASE_URL}/extraction/status/${currentFileId}`);
     if (verifyResponse.ok) {
       const stats = await verifyResponse.json();
-      console.log('✅ Database verification:', stats);
+      console.log('✅ DATABASE VERIFICATION:', stats);
       
-      if (stats.current_total > 0) {
-        showSuccess(`✅ SUCCESS! ${result.insertedCount} leads saved to database. ${stats.current_total} total in file. Processing started...`);
-      } else {
-        showError('⚠️ Leads not found in database after save attempt');
-      }
-    } else {
-      console.error('❌ Verification failed:', verifyResponse.status);
+      showSuccess(`✅ SUCCESS! ${result.insertedCount} leads saved. ${stats.current_total} total in file. Processing started...`);
     }
     
     startPolling();
     
   } catch (error) {
-    console.error('❌ Complete error details:', error);
+    console.error('❌ COMPLETE POPUP ERROR:', error);
     showError(`Extraction failed: ${error.message}`);
-    
-    // Additional debugging info
-    console.log('🔍 Debug info:');
-    console.log('- Current file ID:', currentFileId);
-    console.log('- API Base URL:', API_BASE_URL);
-    console.log('- Tab URL:', tab?.url);
-    
   } finally {
     extractBtn.disabled = false;
     extractBtn.textContent = '🚀 Extract LinkedIn Data';
