@@ -119,12 +119,11 @@ async function extractLinkedInData() {
     
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     
-    // Check if we're on a LinkedIn page
     if (!tab.url.includes('linkedin.com')) {
       throw new Error('Please navigate to a LinkedIn search results page first');
     }
     
-    showSuccess(`Starting extraction of ${maxPages} pages...`);
+    showSuccess(`Starting extraction of ${maxPages} pages with duplicate checking...`);
     
     // Inject content script if needed
     try {
@@ -136,18 +135,17 @@ async function extractLinkedInData() {
       console.log('Content script already injected or injection failed:', e);
     }
     
-    // Wait a moment for script to load
     await new Promise(resolve => setTimeout(resolve, 1000));
     
-    // Try to send message with timeout
     const results = await new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         reject(new Error('Extraction timeout - make sure you\'re on a LinkedIn search results page'));
-      }, 60000); // 60 second timeout
+      }, 120000); // 2 minute timeout for multiple pages
       
       chrome.tabs.sendMessage(tab.id, { 
         action: 'extractLeads',
-        maxPages: maxPages
+        maxPages: maxPages,
+        apiBaseUrl: API_BASE_URL
       }, (response) => {
         clearTimeout(timeout);
         
@@ -165,10 +163,11 @@ async function extractLinkedInData() {
     });
     
     if (!results.leads || results.leads.length === 0) {
-      throw new Error('No leads found. Make sure you\'re on a LinkedIn search results page with visible profiles.');
+      showSuccess('No new leads found - all profiles already in database!');
+      return;
     }
     
-    console.log('Extracted leads:', results.leads);
+    console.log('New leads to process:', results.leads);
     
     const response = await fetch(`${API_BASE_URL}/extraction/extract`, {
       method: 'POST',
@@ -187,7 +186,7 @@ async function extractLinkedInData() {
     }
     
     const result = await response.json();
-    showSuccess(`Successfully extracted ${result.insertedCount} leads from ${results.pagesProcessed || 1} pages! Processing started...`);
+    showSuccess(`Successfully processed ${result.insertedCount} NEW leads from ${results.pagesProcessed || 1} pages! Processing started...`);
     
     startPolling();
     

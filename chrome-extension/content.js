@@ -6,8 +6,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   
   if (request.action === 'extractLeads') {
     const maxPages = request.maxPages || 1;
+    const apiBaseUrl = request.apiBaseUrl || 'https://linkedin-lead-extractor-production.up.railway.app/api';
     
-    extractAllLeadsWithPagination(maxPages).then(result => {
+    extractAllLeadsWithPagination(maxPages, apiBaseUrl).then(result => {
       sendResponse({ 
         success: true, 
         leads: result.leads,
@@ -25,7 +26,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 });
 
-async function extractAllLeadsWithPagination(maxPages = 1) {
+async function extractAllLeadsWithPagination(maxPages = 1, apiBaseUrl) {
   const allLeads = [];
   let currentPage = 1;
   let pagesProcessed = 0;
@@ -37,15 +38,15 @@ async function extractAllLeadsWithPagination(maxPages = 1) {
     while (currentPage <= maxPages) {
       updateProgressIndicator(currentPage, maxPages, `Extracting page ${currentPage}...`);
       
-      // Extract all leads from current page with profile marking
-      const pageLeads = await extractLeadsWithProfileMarking(currentPage);
+      // Extract all leads from current page with database checking
+      const pageLeads = await extractLeadsWithDatabaseCheck(currentPage, apiBaseUrl);
       
       if (pageLeads.length === 0) {
-        console.log(`No leads found on page ${currentPage}, stopping extraction`);
+        console.log(`No NEW leads found on page ${currentPage}, stopping extraction`);
         break;
       }
       
-      console.log(`✅ Page ${currentPage}: Extracted ${pageLeads.length} leads`);
+      console.log(`✅ Page ${currentPage}: Found ${pageLeads.length} NEW leads`);
       allLeads.push(...pageLeads);
       pagesProcessed = currentPage;
       
@@ -66,12 +67,12 @@ async function extractAllLeadsWithPagination(maxPages = 1) {
     }
     
     console.log(`🎉 EXTRACTION COMPLETE!`);
-    console.log(`Total leads: ${allLeads.length} from ${pagesProcessed} pages`);
+    console.log(`Total NEW leads: ${allLeads.length} from ${pagesProcessed} pages`);
     
-    // Clean up all markers after 5 seconds
+    // Keep markers visible for 10 seconds so you can see the results
     setTimeout(() => {
       removeAllMarkers();
-    }, 5000);
+    }, 10000);
     
     removeProgressIndicator();
     
@@ -88,10 +89,10 @@ async function extractAllLeadsWithPagination(maxPages = 1) {
   }
 }
 
-async function extractLeadsWithProfileMarking(currentPage) {
+async function extractLeadsWithDatabaseCheck(currentPage, apiBaseUrl) {
   const allLeads = [];
   
-  console.log(`🔍 Starting profile-by-profile marking for page ${currentPage}`);
+  console.log(`🔍 Starting profile-by-profile database checking for page ${currentPage}`);
   
   // Start from top
   window.scrollTo(0, 0);
@@ -133,20 +134,28 @@ async function extractLeadsWithProfileMarking(currentPage) {
           const lead = extractLeadFromElement(leadElement);
           
           if (lead && lead.firstName && lead.lastName && lead.company) {
-            allLeads.push(lead);
-            markProfileAsExtracted(container, true);
-            console.log(`✓ ${totalProcessed + 1}: ${lead.firstName} ${lead.lastName} - ${lead.company}`);
+            // Check if this person already exists in database
+            const alreadyExists = await checkLeadExists(lead.firstName, lead.lastName, lead.company, apiBaseUrl);
+            
+            if (alreadyExists) {
+              markProfileAsExtracted(container, 'duplicate');
+              console.log(`🔄 ${totalProcessed + 1}: DUPLICATE - ${lead.firstName} ${lead.lastName} - ${lead.company} (already in database)`);
+            } else {
+              allLeads.push(lead);
+              markProfileAsExtracted(container, 'new');
+              console.log(`✓ ${totalProcessed + 1}: NEW - ${lead.firstName} ${lead.lastName} - ${lead.company}`);
+            }
           } else {
             const missingData = [];
             if (!lead || !lead.firstName) missingData.push('firstName');
             if (!lead || !lead.lastName || lead.lastName === 'Unknown') missingData.push('lastName');
             if (!lead || !lead.company) missingData.push('company');
             
-            markProfileAsExtracted(container, false);
+            markProfileAsExtracted(container, 'failed');
             console.log(`❌ ${totalProcessed + 1}: Missing ${missingData.join(', ')} | Found: ${lead?.firstName || 'none'} ${lead?.lastName || 'none'} - ${lead?.company || 'none'}`);
           }
         } else {
-          markProfileAsExtracted(container, false);
+          markProfileAsExtracted(container, 'failed');
           console.log(`❌ ${totalProcessed + 1}: No lead element found in container`);
         }
         
@@ -155,7 +164,7 @@ async function extractLeadsWithProfileMarking(currentPage) {
         
       } catch (error) {
         console.error(`Error processing profile ${i + 1}:`, error);
-        markProfileAsExtracted(container, false);
+        markProfileAsExtracted(container, 'failed');
       }
     }
     
@@ -185,8 +194,26 @@ async function extractLeadsWithProfileMarking(currentPage) {
     }
   }
   
-  console.log(`✅ Page ${currentPage} complete: ${allLeads.length} leads from ${totalProcessed} profiles processed`);
+  console.log(`✅ Page ${currentPage} complete: ${allLeads.length} NEW leads from ${totalProcessed} profiles processed`);
   return allLeads;
+}
+
+async function checkLeadExists(firstName, lastName, company, apiBaseUrl) {
+  try {
+    const response = await fetch(`${apiBaseUrl}/extraction/check-single-duplicate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ firstName, lastName, company })
+    });
+    
+    if (!response.ok) return false;
+    
+    const result = await response.json();
+    return result.exists || false;
+  } catch (error) {
+    console.error('Error checking lead existence:', error);
+    return false;
+  }
 }
 
 function extractLeadFromElement(element) {
@@ -274,7 +301,8 @@ function extractLeadFromElement(element) {
   return lead;
 }
 
-function markProfileAsExtracted(container, success) {
+// Updated marking function with 3 states
+function markProfileAsExtracted(container, status) {
   // Mark as processed
   container.setAttribute('data-extractor-processed', 'true');
   
@@ -286,6 +314,24 @@ function markProfileAsExtracted(container, success) {
   
   const marker = document.createElement('div');
   marker.className = 'extractor-marker';
+  
+  // 3 different marker styles
+  let backgroundColor, emoji, title;
+  
+  if (status === 'new') {
+    backgroundColor = '#28a745'; // Green
+    emoji = '✓';
+    title = 'NEW lead extracted successfully';
+  } else if (status === 'duplicate') {
+    backgroundColor = '#ffc107'; // Yellow
+    emoji = '🔄';
+    title = 'DUPLICATE - already in database';
+  } else {
+    backgroundColor = '#dc3545'; // Red
+    emoji = '✗';
+    title = 'FAILED - missing required data';
+  }
+  
   marker.style.cssText = `
     position: absolute;
     top: 5px;
@@ -293,7 +339,7 @@ function markProfileAsExtracted(container, success) {
     width: 24px;
     height: 24px;
     border-radius: 50%;
-    background: ${success ? '#28a745' : '#dc3545'};
+    background: ${backgroundColor};
     color: white;
     font-size: 14px;
     font-weight: bold;
@@ -305,8 +351,8 @@ function markProfileAsExtracted(container, success) {
     border: 2px solid white;
     box-shadow: 0 2px 4px rgba(0,0,0,0.3);
   `;
-  marker.textContent = success ? '✓' : '✗';
-  marker.title = success ? 'Lead extracted successfully' : 'Failed to extract - missing required data';
+  marker.textContent = emoji;
+  marker.title = title;
   
   // Make container relative if needed
   const containerStyle = window.getComputedStyle(container);
@@ -409,247 +455,6 @@ async function waitForNewPageLoad() {
   });
 }
 
-async function extractLeadsWithProfileMarking(currentPage) {
-  const allLeads = [];
-  
-  console.log(`🔍 Starting profile-by-profile marking for page ${currentPage}`);
-  
-  // Start from top
-  window.scrollTo(0, 0);
-  await new Promise(resolve => setTimeout(resolve, 1500));
-  
-  let lastProfileCount = 0;
-  let stableCount = 0;
-  let totalProcessed = 0;
-  
-  while (stableCount < 3) {
-    // Get all profile containers (including newly loaded ones)
-    const profileContainers = document.querySelectorAll('li.artdeco-list__item');
-    
-    console.log(`📋 Found ${profileContainers.length} total profiles (${profileContainers.length - lastProfileCount} new)`);
-    
-    // Process new profiles only
-    for (let i = lastProfileCount; i < profileContainers.length; i++) {
-      const container = profileContainers[i];
-      
-      try {
-        // Skip if already processed
-        if (container.getAttribute('data-extractor-processed')) {
-          continue;
-        }
-        
-        // Scroll to profile to trigger loading
-        container.scrollIntoView({ 
-          behavior: 'smooth', 
-          block: 'center' 
-        });
-        
-        // Wait for lazy loading
-        await new Promise(resolve => setTimeout(resolve, 500));
-        
-        // Extract lead data
-        const leadElement = container.querySelector('[data-x-search-result="LEAD"]');
-        
-        if (leadElement) {
-          const lead = extractLeadFromElement(leadElement);
-          
-          if (lead && lead.firstName && lead.lastName && lead.company) {
-            allLeads.push(lead);
-            markProfileAsExtracted(container, true);
-            console.log(`✓ ${totalProcessed + 1}: ${lead.firstName} ${lead.lastName} - ${lead.company}`);
-          } else {
-            // Show exactly what's missing
-            const missingData = [];
-            if (!lead || !lead.firstName) missingData.push('firstName');
-            if (!lead || !lead.lastName || lead.lastName === 'Unknown') missingData.push('lastName');  
-            if (!lead || !lead.company) missingData.push('company');
-            
-            markProfileAsExtracted(container, false);
-            console.log(`❌ ${totalProcessed + 1}: Missing ${missingData.join(', ')} | Found: ${lead?.firstName || 'none'} ${lead?.lastName || 'none'} - ${lead?.company || 'none'}`);
-          }
-        } else {
-          markProfileAsExtracted(container, false);
-          console.log(`❌ ${totalProcessed + 1}: No lead element found in container`);
-        }
-        
-        totalProcessed++;
-        updateExtractionCount(allLeads.length);
-        
-      } catch (error) {
-        console.error(`Error processing profile ${i + 1}:`, error);
-        markProfileAsExtracted(container, false);
-      }
-    }
-    
-    lastProfileCount = profileContainers.length;
-    
-    // Scroll down to potentially load more profiles
-    const scrollAmount = window.innerHeight * 0.6;
-    window.scrollBy(0, scrollAmount);
-    await new Promise(resolve => setTimeout(resolve, 2000));
-    
-    // Check for new profiles
-    const newProfileContainers = document.querySelectorAll('li.artdeco-list__item');
-    
-    if (newProfileContainers.length > profileContainers.length) {
-      console.log(`📋 Loaded ${newProfileContainers.length - profileContainers.length} more profiles`);
-      stableCount = 0;
-    } else {
-      stableCount++;
-      console.log(`🔄 No new profiles loaded. Stable count: ${stableCount}/3`);
-    }
-    
-    // Check if we've reached pagination
-    const paginationVisible = document.querySelector('.artdeco-pagination')?.getBoundingClientRect();
-    if (paginationVisible && paginationVisible.top < window.innerHeight) {
-      console.log('📄 Reached pagination area');
-      break;
-    }
-  }
-  
-  console.log(`✅ Page ${currentPage} complete: ${allLeads.length} leads from ${totalProcessed} profiles processed`);
-  return allLeads;
-}
-
-function extractLeadFromElement(element) {
-  const lead = {};
-  
-  try {
-    // Extract name
-    const nameElement = element.querySelector('span[data-anonymize="person-name"]');
-    if (nameElement) {
-      const fullName = nameElement.textContent.trim();
-      
-      // Clean up name
-      const cleanName = fullName
-        .replace(/,?\s*(ChFC®|CLU®|CAP®|PhD|MBA|CPA|Esq\.?|Jr\.?|Sr\.?|III|II|IV)\s*/gi, '')
-        .replace(/\s+Advising.*$/gi, '')
-        .trim();
-      
-      const nameParts = cleanName.split(' ').filter(part => part.length > 0);
-      
-      if (nameParts.length >= 2) {
-        lead.firstName = nameParts[0];
-        lead.lastName = nameParts.slice(1).join(' ');
-      } else if (nameParts.length === 1) {
-        lead.firstName = nameParts[0];
-        lead.lastName = 'Unknown';
-      }
-    }
-    
-    // Extract title
-    const titleElement = element.querySelector('span[data-anonymize="title"]');
-    if (titleElement) {
-      lead.title = titleElement.textContent.trim();
-    }
-    
-    // Extract company with multiple methods
-    let company = '';
-    
-    // Method 1: Company link
-    const companyElement = element.querySelector('a[data-anonymize="company-name"]');
-    if (companyElement) {
-      company = companyElement.textContent.trim();
-    }
-    
-    // Method 2: Parse subtitle if no company link
-    if (!company) {
-      const subtitleElement = element.querySelector('.artdeco-entity-lockup__subtitle');
-      if (subtitleElement) {
-        const text = subtitleElement.textContent;
-        // Look for company after bullet point
-        const parts = text.split('•').map(p => p.trim());
-        if (parts.length > 1) {
-          company = parts[1];
-        } else {
-          // Look for any link in subtitle
-          const anyLink = subtitleElement.querySelector('a');
-          if (anyLink) {
-            company = anyLink.textContent.trim();
-          }
-        }
-      }
-    }
-    
-    if (company) {
-      // Clean up company name
-      company = company.replace(/^[^\w\s]+\s*/, '').replace(/\s+/g, ' ').trim();
-      lead.company = company;
-    }
-    
-    // Extract location
-    const locationElement = element.querySelector('span[data-anonymize="location"]');
-    if (locationElement) {
-      lead.location = locationElement.textContent.trim();
-    }
-    
-    // Extract LinkedIn URL
-    const linkElement = element.querySelector('a[data-lead-search-result*="profile-link"]');
-    if (linkElement) {
-      lead.linkedinUrl = linkElement.href;
-    }
-    
-  } catch (error) {
-    console.error('Error extracting lead data:', error);
-  }
-  
-  return lead;
-}
-
-function markProfileAsExtracted(container, success) {
-  // Mark as processed
-  container.setAttribute('data-extractor-processed', 'true');
-  
-  // Add visual marker
-  const existingMarker = container.querySelector('.extractor-marker');
-  if (existingMarker) {
-    existingMarker.remove();
-  }
-  
-  const marker = document.createElement('div');
-  marker.className = 'extractor-marker';
-  marker.style.cssText = `
-    position: absolute;
-    top: 5px;
-    right: 5px;
-    width: 24px;
-    height: 24px;
-    border-radius: 50%;
-    background: ${success ? '#28a745' : '#dc3545'};
-    color: white;
-    font-size: 14px;
-    font-weight: bold;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 1000;
-    font-family: Arial, sans-serif;
-    border: 2px solid white;
-    box-shadow: 0 2px 4px rgba(0,0,0,0.3);
-  `;
-  marker.textContent = success ? '✓' : '✗';
-  marker.title = success ? 'Lead extracted successfully' : 'Failed to extract - missing required data';
-  
-  // Make container relative if needed
-  const containerStyle = window.getComputedStyle(container);
-  if (containerStyle.position === 'static') {
-    container.style.position = 'relative';
-  }
-  
-  container.appendChild(marker);
-}
-
-function removeAllMarkers() {
-  const markers = document.querySelectorAll('.extractor-marker');
-  markers.forEach(marker => marker.remove());
-  
-  const processedContainers = document.querySelectorAll('[data-extractor-processed]');
-  processedContainers.forEach(container => {
-    container.removeAttribute('data-extractor-processed');
-    container.style.position = '';
-  });
-}
-
 // Progress indicator functions
 function addProgressIndicator() {
   removeProgressIndicator();
@@ -678,7 +483,7 @@ function addProgressIndicator() {
       <div id="progress-bar" style="background: white; height: 100%; border-radius: 3px; width: 0%; transition: width 0.5s;"></div>
     </div>
     <div style="font-size: 11px; margin-top: 5px; opacity: 0.9;" id="progress-details">Starting...</div>
-    <div style="font-size: 12px; margin-top: 3px; font-weight: bold; color: #90EE90;" id="extraction-count">Leads found: 0</div>
+    <div style="font-size: 12px; margin-top: 3px; font-weight: bold; color: #90EE90;" id="extraction-count">NEW Leads: 0</div>
   `;
   
   document.body.appendChild(indicator);
@@ -699,7 +504,7 @@ function updateProgressIndicator(currentPage, maxPages, details) {
 function updateExtractionCount(count) {
   const extractionCount = document.getElementById('extraction-count');
   if (extractionCount) {
-    extractionCount.textContent = `Leads found: ${count}`;
+    extractionCount.textContent = `NEW Leads: ${count}`;
   }
 }
 
@@ -728,7 +533,7 @@ function addExtractionIndicator() {
     z-index: 10000;
     font-family: Arial, sans-serif;
   `;
-  indicator.textContent = '✅ LinkedIn Extractor Ready - Profile marking enabled';
+  indicator.textContent = '✅ LinkedIn Extractor Ready - Database duplicate checking enabled';
   
   document.body.appendChild(indicator);
   

@@ -5,6 +5,27 @@ const { domainQueue, ceoQueue } = require('../utils/queue');
 
 const router = express.Router();
 
+// Check for single duplicate lead
+router.post('/check-single-duplicate', async (req, res) => {
+  try {
+    const { firstName, lastName, company } = req.body;
+    
+    const { data: existingLead } = await supabase
+      .from('leads')
+      .select('id')
+      .eq('first_name', firstName)
+      .eq('last_name', lastName)
+      .eq('company', company)
+      .single();
+    
+    res.json({ exists: !!existingLead });
+    
+  } catch (error) {
+    // No match found or error - assume doesn't exist
+    res.json({ exists: false });
+  }
+});
+
 router.post('/extract', async (req, res) => {
   try {
     const { leads, fileId, fileName, userId = 'anonymous' } = req.body;
@@ -28,15 +49,34 @@ router.post('/extract', async (req, res) => {
     }
     
     const insertedLeads = [];
+    let skippedCount = 0;
     
     for (const lead of leads) {
       try {
+        // Check if this person already exists globally
+        const { data: existingLead } = await supabase
+          .from('leads')
+          .select('id')
+          .eq('first_name', lead.firstName || '')
+          .eq('last_name', lead.lastName || '')
+          .eq('company', lead.company || '')
+          .single();
+        
+        if (existingLead) {
+          console.log(`Skipping duplicate: ${lead.firstName} ${lead.lastName} - ${lead.company} (already exists)`);
+          skippedCount++;
+          continue;
+        }
+        
+        // Generate unique email
+        const tempEmail = `${lead.firstName}.${lead.lastName}.${Date.now()}@temp.com`;
+        
         const { data: leadData } = await supabase
           .from('leads')
           .insert({
             first_name: lead.firstName || '',
             last_name: lead.lastName || '',
-            email: lead.email || `${lead.firstName}.${lead.lastName}@temp.com`,
+            email: tempEmail,
             company: lead.company || '',
             title: lead.title || '',
             linkedin_url: lead.linkedinUrl || '',
@@ -51,7 +91,7 @@ router.post('/extract', async (req, res) => {
         if (leadData) {
           insertedLeads.push(leadData.id);
           
-          // Queue CEO finding directly with a simple domain guess
+          // Queue CEO finding
           if (lead.company) {
             const simpleDomain = `${lead.company.toLowerCase().replace(/[^a-z]/g, '')}.com`;
             
@@ -64,10 +104,13 @@ router.post('/extract', async (req, res) => {
             }, {
               delay: Math.random() * 2000
             });
+            
+            console.log(`✅ Queued CEO search for: ${lead.firstName} ${lead.lastName} - ${lead.company}`);
           }
         }
       } catch (error) {
         console.error('Error inserting lead:', error);
+        skippedCount++;
       }
     }
     
@@ -75,6 +118,7 @@ router.post('/extract', async (req, res) => {
       success: true,
       fileId: actualFileId,
       insertedCount: insertedLeads.length,
+      skippedCount: skippedCount,
       totalLeads: leads.length
     });
     
