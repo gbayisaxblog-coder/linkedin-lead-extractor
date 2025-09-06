@@ -1,382 +1,193 @@
 const express = require('express');
-const { v4: uuidv4 } = require('uuid');
-const supabase = require('../utils/database');
-const { domainQueue, ceoQueue } = require('../utils/queue');
-
+const { supabase } = require('../utils/database');
+const { domainQueue } = require('../utils/queue');
 const router = express.Router();
 
-// Debug route
-router.get('/debug/queues', async (req, res) => {
-  try {
-    const domainWaiting = await domainQueue.getWaiting();
-    const domainActive = await domainQueue.getActive();
-    const domainCompleted = await domainQueue.getCompleted();
-    const domainFailed = await domainQueue.getFailed();
-    
-    const ceoWaiting = await ceoQueue.getWaiting();
-    const ceoActive = await ceoQueue.getActive();
-    const ceoCompleted = await ceoQueue.getCompleted();
-    const ceoFailed = await ceoQueue.getFailed();
-    
-    res.json({
-      domain: {
-        waiting: domainWaiting.length,
-        active: domainActive.length,
-        completed: domainCompleted.length,
-        failed: domainFailed.length
-      },
-      ceo: {
-        waiting: ceoWaiting.length,
-        active: ceoActive.length,
-        completed: ceoCompleted.length,
-        failed: ceoFailed.length
-      },
-      timestamp: new Date().toISOString()
-    });
-    
-  } catch (error) {
-    console.error('Queue debug error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Clear queues for debugging
-router.post('/debug/clear-queues', async (req, res) => {
-  try {
-    console.log('🧹 Clearing all queues...');
-    
-    await domainQueue.empty();
-    await ceoQueue.empty();
-    
-    await domainQueue.clean(0, 'failed');
-    await ceoQueue.clean(0, 'failed');
-    
-    await domainQueue.clean(0, 'completed');
-    await ceoQueue.clean(0, 'completed');
-    
-    console.log('✅ All queues cleared');
-    
-    res.json({ 
-      success: true, 
-      message: 'All queues cleared successfully' 
-    });
-    
-  } catch (error) {
-    console.error('❌ Error clearing queues:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Batch duplicate checking
-router.post('/check-batch-duplicates', async (req, res) => {
-  try {
-    const { leads } = req.body;
-    
-    if (!leads || !Array.isArray(leads) || leads.length === 0) {
-      return res.json({ duplicates: [] });
-    }
-    
-    const checkPromises = leads.map(async (lead) => {
-      try {
-        const { data: existingLead } = await supabase
-          .from('leads')
-          .select('id')
-          .eq('first_name', lead.firstName)
-          .eq('last_name', lead.lastName || 'Unknown')
-          .eq('company', lead.company)
-          .single();
-        
-        return !!existingLead;
-      } catch (error) {
-        return false;
-      }
-    });
-    
-    const results = await Promise.all(checkPromises);
-    const duplicateCount = results.filter(r => r).length;
-    
-    console.log(`✅ Duplicate check: ${duplicateCount}/${leads.length} duplicates found`);
-    res.json({ duplicates: results });
-    
-  } catch (error) {
-    console.error('❌ Duplicate check error:', error);
-    res.status(500).json({ duplicates: [], error: error.message });
-  }
-});
-
-// BULLETPROOF extraction with comprehensive verification
+// Bulletproof extract route
 router.post('/extract', async (req, res) => {
-  console.log('=== EXTRACTION REQUEST RECEIVED ===');
-  console.log('Leads from extension:', req.body.leads?.length);
-  console.log('File ID:', req.body.fileId);
-  console.log('File name:', req.body.fileName);
-  console.log('=====================================');
+  const startTime = Date.now();
+  console.log('🚀 EXTRACTION REQUEST RECEIVED');
+  console.log('📅 Timestamp:', new Date().toISOString());
   
   try {
-    const { leads, fileId, fileName, userId = 'anonymous' } = req.body;
+    const { leads, fileId, fileName, userId } = req.body;
     
     if (!leads || !Array.isArray(leads) || leads.length === 0) {
-      return res.status(400).json({ 
-        error: 'No leads provided',
-        details: 'Leads array is empty or invalid'
+      console.log('❌ Invalid leads data');
+      return res.status(400).json({ error: 'Valid leads array is required' });
+    }
+    
+    if (!fileId) {
+      console.log('❌ Missing file ID');
+      return res.status(400).json({ error: 'File ID is required' });
+    }
+    
+    console.log(`📊 Processing ${leads.length} leads for file: ${fileName}`);
+    console.log(`📁 File ID: ${fileId}`);
+    
+    // Count existing leads before insertion
+    const { count: initialCount } = await supabase
+      .from('leads')
+      .select('*', { count: 'exact', head: true });
+    
+    console.log(`📊 Initial database count: ${initialCount}`);
+    
+    // Prepare bulletproof lead data
+    const cleanLeads = leads.map(lead => {
+      // Clean and validate data
+      const fullName = String(lead.fullName || lead.full_name || `${lead.firstName || ''} ${lead.lastName || ''}`.trim())
+        .replace(/[^\w\s\-'\.]/g, ' ') // Replace special chars with spaces
+        .replace(/\s+/g, ' ') // Normalize spaces
+        .trim()
+        .substring(0, 200); // Limit length
+      
+      const company = String(lead.company || '')
+        .replace(/[^\w\s\-&'\.]/g, ' ') // Allow business chars
+        .replace(/\s+/g, ' ') // Normalize spaces
+        .trim()
+        .substring(0, 200); // Limit length
+      
+      if (!fullName || !company) {
+        console.log(`⚠️ Skipping invalid lead: name="${fullName}", company="${company}"`);
+        return null;
+      }
+      
+      return {
+        full_name: fullName,
+        company: company,
+        title: String(lead.title || '').substring(0, 200) || null,
+        location: String(lead.location || '').substring(0, 100) || null,
+        linkedin_url: String(lead.linkedinUrl || lead.linkedin_url || '').substring(0, 500) || null,
+        file_id: fileId,
+        file_name: fileName,
+        status: 'pending',
+        extracted_at: lead.extractedAt || new Date().toISOString()
+      };
+    }).filter(Boolean); // Remove null entries
+    
+    console.log(`✅ Cleaned leads: ${cleanLeads.length}/${leads.length} valid`);
+    
+    if (cleanLeads.length === 0) {
+      console.log('❌ No valid leads to insert');
+      return res.json({
+        success: true,
+        insertedCount: 0,
+        skippedCount: leads.length,
+        errorCount: 0,
+        message: 'No valid leads found'
       });
     }
     
-    // Get initial database count for verification
-    const { data: initialLeadsData } = await supabase
-      .from('leads')
-      .select('id')
-      .eq('file_id', fileId);
-    
-    const initialCount = initialLeadsData?.length || 0;
-    console.log(`📊 Initial leads in database: ${initialCount}`);
-    
-    let actualFileId = fileId;
-    
-    if (!actualFileId) {
-      // Create new file
-      const { data: fileData, error: fileError } = await supabase
-        .from('extraction_files')
-        .insert({
-          name: fileName || `Extract_${Date.now()}`,
-          total_leads: leads.length
-        })
-        .select()
-        .single();
-      
-      if (fileError) {
-        console.error('❌ File creation error:', fileError);
-        throw new Error(`File creation failed: ${fileError.message}`);
-      }
-      
-      actualFileId = fileData.id;
-      console.log(`✅ New file created: ${actualFileId}`);
-    }
-    
-    const insertedLeads = [];
+    // Bulletproof insertion with upsert
+    let insertedCount = 0;
     let skippedCount = 0;
     let errorCount = 0;
-    const insertionErrors = [];
     
-    console.log(`💾 Starting insertion of ${leads.length} leads...`);
+    console.log('💾 Starting bulletproof insertion...');
     
-    for (let i = 0; i < leads.length; i++) {
-      const lead = leads[i];
+    for (let i = 0; i < cleanLeads.length; i++) {
+      const lead = cleanLeads[i];
       
       try {
-        // Validate required data
-        if (!lead.firstName || !lead.company) {
-          skippedCount++;
-          continue;
-        }
+        console.log(`💾 [${i + 1}/${cleanLeads.length}] Processing: ${lead.full_name} - ${lead.company}`);
         
-        // Check for global duplicate
-        const { data: existingLead } = await supabase
+        const { data, error } = await supabase
           .from('leads')
-          .select('id')
-          .eq('first_name', lead.firstName)
-          .eq('last_name', lead.lastName || 'Unknown')
-          .eq('company', lead.company)
-          .single();
-        
-        if (existingLead) {
-          skippedCount++;
-          continue;
-        }
-        
-        // Insert lead
-        const tempEmail = `${lead.firstName}.${lead.lastName || 'unknown'}.${Date.now()}.${i}@temp.com`;
-        
-        const { data: leadData, error } = await supabase
-          .from('leads')
-          .insert({
-            first_name: lead.firstName,
-            last_name: lead.lastName || 'Unknown',
-            email: tempEmail,
-            company: lead.company,
-            title: lead.title || '',
-            linkedin_url: lead.linkedinUrl || '',
-            location: lead.location || '',
-            file_id: actualFileId,
-            file_name: fileName || `Extract_${Date.now()}`,
-            status: 'pending'
+          .upsert(lead, {
+            onConflict: 'full_name,company',
+            ignoreDuplicates: false
           })
-          .select()
-          .single();
+          .select();
         
         if (error) {
-          console.error(`❌ Insert error [${i + 1}]:`, error.message);
-          insertionErrors.push({
-            lead: `${lead.firstName} ${lead.lastName} - ${lead.company}`,
-            error: error.message
-          });
+          console.error(`❌ [${i + 1}] Insert error:`, error.message);
           errorCount++;
-          continue;
-        }
-        
-        if (leadData) {
-          insertedLeads.push(leadData.id);
+        } else if (data && data.length > 0) {
+          console.log(`✅ [${i + 1}] Success: ID ${data[0].id}`);
+          insertedCount++;
           
-          // Queue domain job
+          // Queue domain search for new leads
           try {
-            await domainQueue.add('find-domain', {
-              leadId: leadData.id,
-              company: lead.company,
-              userId
-            }, {
-              delay: Math.random() * 1000
+            await domainQueue.add('findDomain', {
+              leadId: data[0].id,
+              company: lead.company
             });
+            console.log(`🔄 [${i + 1}] Queued domain search`);
           } catch (queueError) {
-            console.error(`❌ Queue error for ${leadData.id}:`, queueError.message);
+            console.error(`❌ [${i + 1}] Queue error:`, queueError.message);
           }
+        } else {
+          console.log(`🔄 [${i + 1}] Duplicate skipped`);
+          skippedCount++;
         }
         
-      } catch (error) {
-        console.error(`❌ Processing error [${i + 1}]:`, error.message);
-        insertionErrors.push({
-          lead: `${lead.firstName || 'unknown'} ${lead.lastName || 'unknown'} - ${lead.company || 'unknown'}`,
-          error: error.message
-        });
+      } catch (insertError) {
+        console.error(`❌ [${i + 1}] Exception:`, insertError.message);
         errorCount++;
       }
     }
     
-    console.log('=== INSERTION SUMMARY ===');
-    console.log(`✅ Inserted: ${insertedLeads.length}`);
-    console.log(`🔄 Skipped: ${skippedCount}`);
-    console.log(`💥 Errors: ${errorCount}`);
-    console.log('==========================');
-    
-    // CRITICAL: Verify database count
-    const { data: finalLeadsData } = await supabase
+    // Final verification
+    const { count: finalCount } = await supabase
       .from('leads')
-      .select('id')
-      .eq('file_id', actualFileId);
+      .select('*', { count: 'exact', head: true });
     
-    const finalCount = finalLeadsData?.length || 0;
     const actualInserted = finalCount - initialCount;
     
-    console.log(`🔍 VERIFICATION: Expected ${insertedLeads.length}, Found ${actualInserted} new leads`);
+    console.log('📊 INSERTION SUMMARY:');
+    console.log(`✅ Inserted: ${insertedCount}`);
+    console.log(`🔄 Skipped: ${skippedCount}`);
+    console.log(`❌ Errors: ${errorCount}`);
+    console.log(`🔍 Database change: ${actualInserted}`);
+    console.log(`⏱️ Duration: ${Date.now() - startTime}ms`);
     
-    if (actualInserted !== insertedLeads.length) {
-      console.error(`❌ VERIFICATION FAILED: Count mismatch!`);
-      console.log(`   Backend reported: ${insertedLeads.length} inserted`);
-      console.log(`   Database shows: ${actualInserted} new leads`);
-      console.log(`   Missing: ${insertedLeads.length - actualInserted} leads`);
-    } else {
-      console.log(`✅ VERIFICATION SUCCESSFUL: All leads confirmed in database`);
-    }
-    
-    const response = {
+    res.json({
       success: true,
-      fileId: actualFileId,
-      insertedCount: insertedLeads.length,
-      skippedCount: skippedCount,
-      errorCount: errorCount,
-      totalLeads: leads.length,
-      verifiedCount: finalCount,
-      actualInserted: actualInserted,
-      verificationPassed: actualInserted === insertedLeads.length,
-      insertionErrors: insertionErrors.length > 0 ? insertionErrors.slice(0, 5) : undefined // Limit error details
-    };
-    
-    console.log('📤 Response summary:', {
-      inserted: response.insertedCount,
-      verified: response.actualInserted,
-      passed: response.verificationPassed
+      insertedCount: actualInserted,
+      skippedCount,
+      errorCount,
+      totalProcessed: cleanLeads.length,
+      duration: Date.now() - startTime
     });
     
-    res.json(response);
-    
   } catch (error) {
-    console.error('❌ EXTRACTION ERROR:', error.message);
-    res.status(500).json({ 
-      error: 'Internal server error',
-      details: error.message,
-      timestamp: new Date().toISOString()
+    console.error('❌ Extraction route error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      duration: Date.now() - startTime
     });
   }
 });
 
+// Get file stats
 router.get('/status/:fileId', async (req, res) => {
   try {
     const { fileId } = req.params;
     
-    const { data: fileData } = await supabase
-      .from('extraction_files')
-      .select('*')
-      .eq('id', fileId)
-      .single();
-    
-    if (!fileData) {
-      return res.status(404).json({ error: 'File not found' });
-    }
-    
-    const { data: leadsData } = await supabase
+    const { data: stats, error } = await supabase
       .from('leads')
-      .select('status, ceo_name')
+      .select('status')
       .eq('file_id', fileId);
     
-    const stats = {
-      ...fileData,
-      current_total: leadsData.length,
-      completed: leadsData.filter(l => l.status === 'completed').length,
-      failed: leadsData.filter(l => l.status === 'failed').length,
-      pending: leadsData.filter(l => l.status === 'pending').length,
-      with_ceo: leadsData.filter(l => l.ceo_name && l.ceo_name !== '').length
+    if (error) {
+      return res.status(500).json({ error: error.message });
+    }
+    
+    const summary = {
+      current_total: stats.length,
+      pending: stats.filter(s => s.status === 'pending').length,
+      processing: stats.filter(s => s.status === 'processing').length,
+      completed: stats.filter(s => s.status === 'completed').length,
+      failed: stats.filter(s => s.status === 'failed').length,
+      with_ceo: stats.filter(s => s.status === 'completed').length // Simplified for now
     };
     
-    res.json(stats);
+    res.json(summary);
     
   } catch (error) {
-    console.error('❌ Status error:', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-// SIMPLE VERSION - Replace /check-duplicates route with this:
-router.post('/check-duplicates', async (req, res) => {
-  try {
-    const { leads } = req.body;
-    
-    if (!leads || !Array.isArray(leads)) {
-      return res.status(400).json({ error: 'Invalid leads data' });
-    }
-    
-    console.log(`🔍 Checking ${leads.length} leads for duplicates...`);
-    
-    const duplicateResults = [];
-    
-    // Check each lead individually (slower but guaranteed to work)
-    for (const lead of leads) {
-      const firstName = lead.firstName?.trim() || '';
-      const lastName = lead.lastName?.trim() || 'Unknown';
-      const company = lead.company?.trim() || '';
-      
-      const { data: existingLead, error } = await supabase
-        .from('leads')
-        .select('id')
-        .ilike('first_name', firstName)
-        .ilike('last_name', lastName)
-        .ilike('company', company)
-        .limit(1);
-      
-      if (error) {
-        console.error('❌ Individual duplicate check error:', error);
-        duplicateResults.push(false);
-      } else {
-        duplicateResults.push(existingLead && existingLead.length > 0);
-      }
-    }
-    
-    const duplicateCount = duplicateResults.filter(d => d).length;
-    console.log(`✅ Duplicate check complete: ${duplicateCount} duplicates found out of ${leads.length}`);
-    
-    res.json({ duplicates: duplicateResults });
-    
-  } catch (error) {
-    console.error('❌ Duplicate check error:', error);
-    res.json({ duplicates: req.body.leads?.map(() => false) || [] });
+    console.error('❌ Status route error:', error);
+    res.status(500).json({ error: error.message });
   }
 });
 

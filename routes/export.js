@@ -1,56 +1,58 @@
 const express = require('express');
-const { stringify } = require('csv-stringify');
-const supabase = require('../utils/database');
-
+const { supabase } = require('../utils/database');
+const { stringify } = require('csv-stringify/sync');
 const router = express.Router();
 
+// Export leads to CSV
 router.get('/csv/:fileId', async (req, res) => {
   try {
     const { fileId } = req.params;
     
-    const { data: fileData } = await supabase
-      .from('extraction_files')
-      .select('name')
-      .eq('id', fileId)
-      .single();
+    console.log('📥 Exporting CSV for file:', fileId);
     
-    if (!fileData) {
-      return res.status(404).json({ error: 'File not found' });
-    }
-    
-    const { data: leadsData } = await supabase
+    const { data: leads, error } = await supabase
       .from('leads')
-      .select('first_name, last_name, email, ceo_name, domain')
+      .select('*')
       .eq('file_id', fileId)
-      .in('status', ['completed', 'failed'])
-      .order('created_at', { ascending: true });
+      .order('created_at', { ascending: false });
     
-    if (!leadsData || leadsData.length === 0) {
-      return res.status(404).json({ error: 'No processed leads found' });
+    if (error) {
+      console.error('❌ CSV export error:', error);
+      return res.status(500).json({ error: error.message });
     }
     
-    res.setHeader('Content-Type', 'text/csv');
-    res.setHeader('Content-Disposition', `attachment; filename="${fileData.name}.csv"`);
+    if (leads.length === 0) {
+      return res.status(404).json({ error: 'No leads found for this file' });
+    }
     
-    const csvData = [
-      ['Full Name', 'Email', 'CEO Name'],
-      ...leadsData.map(row => [
-        `${row.first_name} ${row.last_name}`.trim(),
-        row.email || `${row.first_name}.${row.last_name}@${row.domain}`,
-        row.ceo_name || 'NOT_FOUND'
-      ])
-    ];
-    
-    stringify(csvData, (err, output) => {
-      if (err) {
-        return res.status(500).json({ error: 'CSV generation failed' });
-      }
-      res.send(output);
+    // Generate CSV
+    const csv = stringify(leads, {
+      header: true,
+      columns: [
+        'id',
+        'full_name',
+        'company',
+        'title',
+        'location',
+        'linkedin_url',
+        'domain',
+        'email',
+        'email_verified',
+        'ceo_name',
+        'status',
+        'created_at'
+      ]
     });
     
+    console.log(`✅ CSV generated: ${leads.length} leads`);
+    
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', `attachment; filename="leads_${fileId}_${Date.now()}.csv"`);
+    res.send(csv);
+    
   } catch (error) {
-    console.error('Export error:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    console.error('❌ CSV export route error:', error);
+    res.status(500).json({ error: error.message });
   }
 });
 

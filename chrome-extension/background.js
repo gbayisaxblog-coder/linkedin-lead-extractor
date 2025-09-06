@@ -1,152 +1,223 @@
-console.log('🚀 LinkedIn Lead Extractor background script loaded');
+console.log('🚀 [BACKGROUND] LinkedIn Lead Extractor background script loaded - FULL DEBUG MODE');
+console.log('🚀 [BACKGROUND] Timestamp:', new Date().toISOString());
 
 const API_BASE_URL = 'https://linkedin-lead-extractor-production.up.railway.app/api';
 
+// Debug function to log everything
+function debugLog(message, data = null) {
+  const timestamp = new Date().toISOString();
+  console.log(`🔧 [BACKGROUND ${timestamp}] ${message}`, data || '');
+}
+
 // Listen for messages from popup
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  console.log('📨 Background received message:', request);
+  debugLog('📨 Message received:', { action: request.action, sender: sender.tab?.url || 'popup' });
+  
+  const startTime = Date.now();
   
   if (request.action === 'loadFiles') {
-    loadFiles().then(sendResponse);
-    return true; // Keep channel open
+    debugLog('🔄 Processing loadFiles...');
+    loadFiles()
+      .then(response => {
+        debugLog('✅ loadFiles completed:', { success: response.success, duration: Date.now() - startTime });
+        sendResponse(response);
+      })
+      .catch(error => {
+        debugLog('❌ loadFiles failed:', { error: error.message, duration: Date.now() - startTime });
+        sendResponse({ success: false, error: error.message });
+      });
+    return true;
   }
   
   if (request.action === 'createFile') {
-    createFile(request.fileName).then(sendResponse);
+    debugLog('🔄 Processing createFile:', request.fileName);
+    createFile(request.fileName)
+      .then(response => {
+        debugLog('✅ createFile completed:', { success: response.success, duration: Date.now() - startTime });
+        sendResponse(response);
+      })
+      .catch(error => {
+        debugLog('❌ createFile failed:', { error: error.message, duration: Date.now() - startTime });
+        sendResponse({ success: false, error: error.message });
+      });
     return true;
   }
   
   if (request.action === 'sendToDatabase') {
-    sendToDatabase(request.payload).then(sendResponse);
+    debugLog('🔄 Processing sendToDatabase:', {
+      leadsCount: request.payload?.leads?.length,
+      fileId: request.payload?.fileId,
+      fileName: request.payload?.fileName
+    });
+    sendToDatabase(request.payload)
+      .then(response => {
+        debugLog('✅ sendToDatabase completed:', { success: response.success, duration: Date.now() - startTime });
+        sendResponse(response);
+      })
+      .catch(error => {
+        debugLog('❌ sendToDatabase failed:', { error: error.message, duration: Date.now() - startTime });
+        sendResponse({ success: false, error: error.message });
+      });
     return true;
   }
   
   if (request.action === 'getFileStats') {
-    getFileStats(request.fileId).then(sendResponse);
+    debugLog('🔄 Processing getFileStats:', request.fileId);
+    getFileStats(request.fileId)
+      .then(response => {
+        debugLog('✅ getFileStats completed:', { success: response.success, duration: Date.now() - startTime });
+        sendResponse(response);
+      })
+      .catch(error => {
+        debugLog('❌ getFileStats failed:', { error: error.message, duration: Date.now() - startTime });
+        sendResponse({ success: false, error: error.message });
+      });
     return true;
   }
   
-  if (request.action === 'downloadCSV') {
-    downloadCSV(request.fileId).then(sendResponse);
-    return true;
-  }
+  debugLog('⚠️ Unknown action received:', request.action);
+  sendResponse({ success: false, error: 'Unknown action: ' + request.action });
 });
 
 async function loadFiles() {
   try {
-    console.log('📂 Loading files from API...');
-    const response = await fetch(`${API_BASE_URL}/files`);
+    debugLog('📂 Making loadFiles API call to:', `${API_BASE_URL}/files`);
+    
+    const response = await fetch(`${API_BASE_URL}/files`, {
+      method: 'GET',
+      headers: { 
+        'Content-Type': 'application/json',
+        'Cache-Control': 'no-cache',
+        'X-Debug-Source': 'chrome-extension-background'
+      }
+    });
+    
+    debugLog('📡 loadFiles API response:', { status: response.status, ok: response.ok });
     
     if (!response.ok) {
-      throw new Error(`Failed to load files: ${response.status}`);
+      const errorText = await response.text();
+      debugLog('❌ loadFiles API error:', { status: response.status, error: errorText });
+      throw new Error(`API Error ${response.status}: ${errorText}`);
     }
     
     const files = await response.json();
-    console.log('✅ Files loaded:', files);
+    debugLog('✅ loadFiles success:', { filesCount: files.length, files: files });
     
     return { success: true, files };
   } catch (error) {
-    console.error('❌ Load files error:', error);
+    debugLog('❌ loadFiles exception:', { message: error.message, stack: error.stack });
     return { success: false, error: error.message };
   }
 }
 
 async function createFile(fileName) {
   try {
-    console.log('📁 Creating file:', fileName);
+    debugLog('📁 Making createFile API call:', fileName);
+    
+    const requestBody = { name: fileName };
+    debugLog('📦 createFile request body:', requestBody);
+    
     const response = await fetch(`${API_BASE_URL}/files`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: fileName })
+      headers: { 
+        'Content-Type': 'application/json',
+        'Cache-Control': 'no-cache',
+        'X-Debug-Source': 'chrome-extension-background'
+      },
+      body: JSON.stringify(requestBody)
     });
+    
+    debugLog('📡 createFile API response:', { status: response.status, ok: response.ok });
     
     if (!response.ok) {
       const errorText = await response.text();
-      throw new Error(`Failed to create file: ${errorText}`);
+      debugLog('❌ createFile API error:', { status: response.status, error: errorText });
+      throw new Error(`API Error ${response.status}: ${errorText}`);
     }
     
     const newFile = await response.json();
-    console.log('✅ File created:', newFile);
+    debugLog('✅ createFile success:', newFile);
     
     return { success: true, file: newFile };
   } catch (error) {
-    console.error('❌ Create file error:', error);
+    debugLog('❌ createFile exception:', { message: error.message, stack: error.stack });
     return { success: false, error: error.message };
   }
 }
 
 async function sendToDatabase(payload) {
   try {
-    console.log('📤 Sending to database:', {
-      leadsCount: payload.leads.length,
-      fileId: payload.fileId,
-      fileName: payload.fileName
+    debugLog('📤 Making sendToDatabase API call');
+    debugLog('📦 Full payload details:', {
+      leadsCount: payload?.leads?.length,
+      fileId: payload?.fileId,
+      fileName: payload?.fileName,
+      userId: payload?.userId,
+      firstLead: payload?.leads?.[0],
+      payloadSize: JSON.stringify(payload).length
     });
     
     const response = await fetch(`${API_BASE_URL}/extraction/extract`, {
       method: 'POST',
       headers: { 
         'Content-Type': 'application/json',
-        'Accept': 'application/json'
+        'Accept': 'application/json',
+        'Cache-Control': 'no-cache',
+        'X-Debug-Source': 'chrome-extension-background',
+        'X-Debug-Timestamp': new Date().toISOString()
       },
       body: JSON.stringify(payload)
     });
     
-    console.log(`📡 Database response: ${response.status}`);
+    debugLog('📡 sendToDatabase API response:', { 
+      status: response.status, 
+      ok: response.ok,
+      headers: Object.fromEntries(response.headers.entries())
+    });
     
     if (!response.ok) {
       const errorText = await response.text();
-      throw new Error(`Database error: ${errorText}`);
+      debugLog('❌ sendToDatabase API error:', { status: response.status, error: errorText });
+      throw new Error(`Database API Error ${response.status}: ${errorText}`);
     }
     
     const result = await response.json();
-    console.log('✅ Database success:', result);
+    debugLog('✅ sendToDatabase success:', result);
     
     return { success: true, result };
   } catch (error) {
-    console.error('❌ Database error:', error);
+    debugLog('❌ sendToDatabase exception:', { message: error.message, stack: error.stack });
     return { success: false, error: error.message };
   }
 }
 
 async function getFileStats(fileId) {
   try {
-    const response = await fetch(`${API_BASE_URL}/extraction/status/${fileId}`);
+    debugLog('📊 Making getFileStats API call:', fileId);
+    
+    const response = await fetch(`${API_BASE_URL}/extraction/status/${fileId}`, {
+      method: 'GET',
+      headers: { 
+        'Cache-Control': 'no-cache',
+        'X-Debug-Source': 'chrome-extension-background'
+      }
+    });
+    
+    debugLog('📡 getFileStats API response:', { status: response.status, ok: response.ok });
     
     if (!response.ok) {
-      return { success: false, error: 'Failed to get stats' };
+      debugLog('❌ getFileStats API error:', response.status);
+      return { success: false, error: `Stats API error: ${response.status}` };
     }
     
     const stats = await response.json();
+    debugLog('✅ getFileStats success:', stats);
+    
     return { success: true, stats };
   } catch (error) {
+    debugLog('❌ getFileStats exception:', { message: error.message, stack: error.stack });
     return { success: false, error: error.message };
   }
 }
 
-async function downloadCSV(fileId) {
-  try {
-    const response = await fetch(`${API_BASE_URL}/export/csv/${fileId}`);
-    
-    if (!response.ok) {
-      throw new Error('Failed to generate CSV');
-    }
-    
-    const blob = await response.blob();
-    const url = URL.createObjectURL(blob);
-    
-    // Trigger download
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `leads_export_${Date.now()}.csv`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    
-    URL.revokeObjectURL(url);
-    
-    return { success: true };
-  } catch (error) {
-    return { success: false, error: error.message };
-  }
-}
+debugLog('✅ Background script setup complete - FULL DEBUG MODE ACTIVE');
