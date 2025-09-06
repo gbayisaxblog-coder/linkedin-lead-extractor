@@ -63,21 +63,20 @@ async function extractAllLeadsWithPagination(maxPages = 1, apiBaseUrl) {
     while (currentPage <= maxPages) {
       updatePersistentStats(currentPage, maxPages, `Extracting page ${currentPage}...`, totalStats);
       
-      // Extract all leads from current page with FAST batch checking
-      const pageResult = await extractLeadsWithFastDuplicateCheck(currentPage, apiBaseUrl, totalStats);
+      // Extract all leads from current page WITHOUT duplicate checking (to avoid CSP issues)
+      const pageResult = await extractLeadsFromPage(currentPage, totalStats);
       
-      if (pageResult.newLeads.length === 0 && pageResult.duplicates === 0 && pageResult.failed === 0) {
+      if (pageResult.newLeads.length === 0 && pageResult.failed === 0) {
         console.log(`No leads found on page ${currentPage}, stopping extraction`);
         break;
       }
       
-      console.log(`✅ Page ${currentPage}: ${pageResult.newLeads.length} NEW, ${pageResult.duplicates} duplicates, ${pageResult.failed} failed`);
+      console.log(`✅ Page ${currentPage}: ${pageResult.newLeads.length} NEW, ${pageResult.failed} failed`);
       allLeads.push(...pageResult.newLeads);
       pagesProcessed = currentPage;
       
       // Update total stats
       totalStats.new += pageResult.newLeads.length;
-      totalStats.duplicates += pageResult.duplicates;
       totalStats.failed += pageResult.failed;
       totalStats.processed += pageResult.totalProcessed;
       
@@ -99,7 +98,7 @@ async function extractAllLeadsWithPagination(maxPages = 1, apiBaseUrl) {
     
     console.log(`🎉 EXTRACTION COMPLETE!`);
     console.log(`Final results: ${totalStats.new} NEW leads extracted`);
-    console.log(`Summary: ${totalStats.duplicates} duplicates, ${totalStats.failed} failed`);
+    console.log(`Summary: ${totalStats.failed} failed`);
     
     updatePersistentStats(pagesProcessed, maxPages, `🎉 COMPLETE! ${totalStats.new} new leads found`, totalStats);
     
@@ -125,15 +124,13 @@ async function extractAllLeadsWithPagination(maxPages = 1, apiBaseUrl) {
   }
 }
 
-async function extractLeadsWithFastDuplicateCheck(currentPage, apiBaseUrl, globalStats) {
-  const allExtractedData = [];
+async function extractLeadsFromPage(currentPage, globalStats) {
   const newLeads = [];
   let failedCount = 0;
-  let duplicateCount = 0;
   
-  console.log(`🚀 Starting FAST extraction for page ${currentPage}`);
+  console.log(`🚀 Starting extraction for page ${currentPage}`);
   
-  // STEP 1: FAST EXTRACTION
+  // STEP 1: FAST EXTRACTION WITHOUT API CALLS
   window.scrollTo(0, 0);
   await new Promise(resolve => setTimeout(resolve, 1000));
   
@@ -150,7 +147,7 @@ async function extractLeadsWithFastDuplicateCheck(currentPage, apiBaseUrl, globa
       if (container.getAttribute('data-extractor-processed')) continue;
       
       container.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      await new Promise(resolve => setTimeout(resolve, 220)); // 10% slower (was 200ms)
+      await new Promise(resolve => setTimeout(resolve, 220));
       
       const leadElement = container.querySelector('[data-x-search-result="LEAD"]');
       
@@ -159,8 +156,9 @@ async function extractLeadsWithFastDuplicateCheck(currentPage, apiBaseUrl, globa
         
         // Only require firstName and company
         if (lead && lead.firstName && lead.company) {
-          allExtractedData.push({ lead, container, index: totalProcessed + 1 });
-          console.log(`📋 Extracted: ${lead.firstName} ${lead.lastName || 'Unknown'} - ${lead.company}`);
+          newLeads.push(lead);
+          markProfileAsExtracted(container, 'new');
+          console.log(`✓ ${totalProcessed + 1}: NEW - ${lead.firstName} ${lead.lastName || 'Unknown'} - ${lead.company}`);
         } else {
           markProfileAsExtracted(container, 'failed');
           failedCount++;
@@ -181,7 +179,7 @@ async function extractLeadsWithFastDuplicateCheck(currentPage, apiBaseUrl, globa
       
       // Update stats in real-time
       const currentStats = {
-        new: globalStats.new,
+        new: globalStats.new + newLeads.length,
         duplicates: globalStats.duplicates,
         failed: globalStats.failed + failedCount,
         processed: globalStats.processed + totalProcessed
@@ -192,7 +190,7 @@ async function extractLeadsWithFastDuplicateCheck(currentPage, apiBaseUrl, globa
     lastProfileCount = profileContainers.length;
     
     window.scrollBy(0, window.innerHeight * 0.6);
-    await new Promise(resolve => setTimeout(resolve, 1100)); // 10% slower (was 1000ms)
+    await new Promise(resolve => setTimeout(resolve, 1100));
     
     const newProfileContainers = document.querySelectorAll('li.artdeco-list__item');
     
@@ -208,72 +206,13 @@ async function extractLeadsWithFastDuplicateCheck(currentPage, apiBaseUrl, globa
     }
   }
   
-  console.log(`📋 Fast extraction complete: ${allExtractedData.length} potential leads`);
-  
-  // STEP 2: BATCH DUPLICATE CHECK
-  if (allExtractedData.length > 0) {
-    updatePersistentStats(currentPage, 1, `Page ${currentPage}: Checking ${allExtractedData.length} leads for duplicates...`, globalStats);
-    
-    const leadsToCheck = allExtractedData.map(item => ({
-      firstName: item.lead.firstName,
-      lastName: item.lead.lastName || 'Unknown',
-      company: item.lead.company
-    }));
-    
-    const duplicateResults = await checkBatchDuplicates(leadsToCheck, apiBaseUrl);
-    
-    // STEP 3: APPLY MARKERS ALL AT ONCE
-    updatePersistentStats(currentPage, 1, `Page ${currentPage}: Applying markers...`, globalStats);
-    
-    for (let i = 0; i < allExtractedData.length; i++) {
-      const { lead, container, index } = allExtractedData[i];
-      const isDuplicate = duplicateResults[i];
-      
-      if (isDuplicate) {
-        markProfileAsExtracted(container, 'duplicate');
-        duplicateCount++;
-        console.log(`🔄 ${index}: DUPLICATE - ${lead.firstName} ${lead.lastName || 'Unknown'} - ${lead.company}`);
-      } else {
-        newLeads.push(lead);
-        markProfileAsExtracted(container, 'new');
-        console.log(`✓ ${index}: NEW - ${lead.firstName} ${lead.lastName || 'Unknown'} - ${lead.company}`);
-      }
-    }
-  }
-  
-  console.log(`✅ Page ${currentPage} complete: ${newLeads.length} NEW, ${duplicateCount} duplicates, ${failedCount} failed`);
+  console.log(`📋 Extraction complete: ${newLeads.length} new leads, ${failedCount} failed`);
   
   return {
     newLeads: newLeads,
-    duplicates: duplicateCount,
     failed: failedCount,
     totalProcessed: totalProcessed
   };
-}
-
-async function checkBatchDuplicates(leads, apiBaseUrl) {
-  try {
-    console.log(`🔍 Checking ${leads.length} leads for duplicates...`);
-    
-    const response = await fetch(`${apiBaseUrl}/extraction/check-duplicates`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ leads })
-    });
-    
-    if (!response.ok) {
-      console.error('Batch duplicate check failed:', response.status);
-      return leads.map(() => false);
-    }
-    
-    const result = await response.json();
-    console.log(`✅ Duplicate check complete: ${result.duplicates?.length || 0} duplicates found out of ${leads.length}`);
-    
-    return result.duplicates || leads.map(() => false);
-  } catch (error) {
-    console.error('Error checking batch duplicates:', error);
-    return leads.map(() => false);
-  }
 }
 
 function extractLeadFromElement(element) {
@@ -366,7 +305,7 @@ function extractLeadFromElement(element) {
   }
 }
 
-// Updated marking function with 3 states
+// Updated marking function - only NEW and FAILED (duplicate checking happens in backend)
 function markProfileAsExtracted(container, status) {
   container.setAttribute('data-extractor-processed', 'true');
   
@@ -384,10 +323,6 @@ function markProfileAsExtracted(container, status) {
     backgroundColor = '#28a745'; // Green
     emoji = '✓';
     title = 'NEW lead extracted successfully';
-  } else if (status === 'duplicate') {
-    backgroundColor = '#ffc107'; // Yellow
-    emoji = '🔄';
-    title = 'DUPLICATE - already in database';
   } else {
     backgroundColor = '#dc3545'; // Red
     emoji = '✗';
@@ -664,7 +599,7 @@ function addExtractionIndicator() {
     z-index: 10000;
     font-family: Arial, sans-serif;
   `;
-  indicator.textContent = '✅ LinkedIn Extractor Ready - Optimized timing';
+  indicator.textContent = '✅ LinkedIn Extractor Ready - CSP Safe';
   
   document.body.appendChild(indicator);
   
