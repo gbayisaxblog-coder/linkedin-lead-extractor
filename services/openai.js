@@ -5,9 +5,13 @@ class OpenAIService {
     this.client = new OpenAI({
       apiKey: process.env.OPENAI_API_KEY
     });
+    
+    console.log('🤖 OpenAI service initialized');
   }
 
   async extractCEOName(domain, company, visibleText) {
+    console.log(`🤖 Extracting CEO name for ${company} using OpenAI`);
+    
     const prompt = `You are given visible text from web search results for a company's top executive.
 
 - Company: ${company}
@@ -34,12 +38,16 @@ Output: just the full name or NOT_FOUND`;
       const raw = response.choices[0].message.content?.trim() || '';
       
       if (raw.toUpperCase().includes('NOT_FOUND')) {
+        console.log(`❌ OpenAI: No CEO found for ${company}`);
         return '';
       }
 
-      return this.extractCleanFullName(raw);
+      const cleanedName = this.extractCleanFullName(raw);
+      console.log(`✅ OpenAI extracted CEO for ${company}: ${cleanedName || 'none'}`);
+      
+      return cleanedName;
     } catch (error) {
-      console.error('OpenAI error:', error);
+      console.error(`❌ OpenAI error for ${company}:`, error.message);
       return '';
     }
   }
