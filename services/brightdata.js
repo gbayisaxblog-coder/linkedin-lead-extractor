@@ -12,10 +12,12 @@ class BrightDataService {
     console.log(`🌐 Finding domain for company: ${companyName}`);
     
     try {
-      console.log(`🔍 Searching Google for: "${companyName}" website`);
+      const searchQuery = `"${companyName}" website`;
+      console.log(`🔍 Searching Google for: ${searchQuery}`);
       
       const response = await axios.post(this.baseURL, {
-        url: `https://www.google.com/search?q="${companyName}" website`,
+        url: `https://www.google.com/search?q=${encodeURIComponent(searchQuery)}`,
+        zone: 'domain_finder',
         country: 'US',
         format: 'json'
       }, {
@@ -56,7 +58,7 @@ class BrightDataService {
   async findCEO(domain, companyName) {
     console.log(`👔 Finding CEO for ${companyName} (${domain})`);
     
-    // Use the EXACT same query format as your Python script
+    // Use single search query like your Python script
     const query = `CEO of ${companyName} ${domain}`;
     
     try {
@@ -64,6 +66,7 @@ class BrightDataService {
       
       const response = await axios.post(this.baseURL, {
         url: `https://www.google.com/search?q=${encodeURIComponent(query)}`,
+        zone: 'domain_finder',
         country: 'US',
         format: 'json'
       }, {
@@ -156,7 +159,7 @@ class BrightDataService {
 
   extractTextFromSearchResults(data) {
     try {
-      // Extract text content from search results like your Python script does
+      // Extract text content from search results for OpenAI processing
       let searchText = '';
       
       if (typeof data === 'object') {
@@ -165,7 +168,7 @@ class BrightDataService {
         searchText = String(data);
       }
       
-      // Clean up and limit size for OpenAI (like your Python script)
+      // Limit size for OpenAI (like your Python script)
       searchText = searchText.substring(0, 2000);
       
       return searchText;
