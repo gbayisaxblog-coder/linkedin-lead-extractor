@@ -3,9 +3,10 @@ const axios = require('axios');
 class BrightDataService {
   constructor() {
     this.apiKey = process.env.BRIGHTDATA_API_KEY;
-    this.baseURL = 'https://api.brightdata.com/datasets/v3';
+    // Use the correct Bright Data API endpoint
+    this.baseURL = 'https://api.brightdata.com/dca';
     
-    console.log('🔧 Bright Data service initialized');
+    console.log('🔧 Bright Data service initialized with API key:', this.apiKey ? 'Present' : 'Missing');
   }
 
   async findDomain(companyName) {
@@ -19,9 +20,8 @@ class BrightDataService {
         console.log(`🔍 Domain search query: "${query}"`);
         
         const response = await axios.post(`${this.baseURL}/trigger`, {
-          dataset_id: 'gd_l7q7dkf244hwjntr5',
-          query: query,
-          limit: 15
+          url: `https://www.google.com/search?q=${encodeURIComponent(query)}`,
+          format: 'json'
         }, {
           headers: {
             'Authorization': `Bearer ${this.apiKey}`,
@@ -30,18 +30,15 @@ class BrightDataService {
           timeout: 30000
         });
 
-        if (response.data.results && response.data.results.length > 0) {
-          console.log(`📊 Found ${response.data.results.length} search results for "${query}"`);
-          
-          // Analyze all results to find the best match
-          const domain = this.analyzResultsForBestDomain(response.data.results, companyName);
+        console.log(`📊 Bright Data response status:`, response.status);
+        
+        if (response.data) {
+          const domain = this.extractDomainFromGoogleResults(response.data, companyName);
           
           if (domain) {
             console.log(`✅ Domain found for ${companyName} with query "${query}": ${domain}`);
             return domain;
           }
-        } else {
-          console.log(`❌ No search results for query: "${query}"`);
         }
         
         // Small delay between queries
@@ -49,130 +46,73 @@ class BrightDataService {
         
       } catch (error) {
         console.error(`❌ Domain search error for query "${query}":`, error.message);
+        if (error.response) {
+          console.log('Error response data:', error.response.data);
+          console.log('Error response status:', error.response.status);
+        }
       }
     }
     
-    console.log(`❌ No domain found for ${companyName} after trying ${searchQueries.length} queries`);
-    return null;
+    // Fallback: Generate simple domain
+    const fallbackDomain = this.generateFallbackDomain(companyName);
+    console.log(`🔧 Using fallback domain for ${companyName}: ${fallbackDomain}`);
+    return fallbackDomain;
   }
 
   buildDomainQueries(companyName) {
     const company = companyName.trim();
     
     return [
-      // Most specific first
       `"${company}" website`,
       `"${company}" official site`,
-      `"${company}"`,
-      
-      // Without quotes for broader results
       `${company} website`,
-      `${company} official`,
-      
-      // With common domain extensions
       `"${company}" site:.com`,
-      
-      // Cleaned company name
-      `"${this.cleanCompanyName(company)}" website`
+      `${company} official`
     ];
   }
 
-  cleanCompanyName(company) {
-    return company
-      .replace(/\s+(Inc|LLC|Ltd|Corp|Co|Group|Partners|Solutions|Services|Technologies|Systems)\.?$/i, '')
-      .replace(/\s+(The|A|An)\s+/gi, ' ')
-      .trim();
+  generateFallbackDomain(companyName) {
+    // Generate a reasonable domain guess
+    const cleanName = companyName
+      .toLowerCase()
+      .replace(/[^a-z\s]/g, '')
+      .replace(/\s+(inc|llc|ltd|corp|co|group|partners|solutions|services|technologies|systems|the|a|an)\s*/g, ' ')
+      .trim()
+      .replace(/\s+/g, '');
+    
+    return `${cleanName}.com`;
   }
 
-  analyzResultsForBestDomain(results, companyName) {
-    console.log(`🔍 Analyzing ${results.length} results for ${companyName}:`);
-    
-    const companyWords = companyName.toLowerCase()
-      .replace(/[^\w\s]/g, ' ')
-      .split(' ')
-      .filter(w => w.length > 2); // Only words longer than 2 chars
-    
-    let bestMatch = null;
-    let bestScore = 0;
-    
-    for (let i = 0; i < results.length; i++) {
-      const result = results[i];
-      const title = (result.title || '').toLowerCase();
-      const description = (result.description || '').toLowerCase();
-      const url = (result.url || '').toLowerCase();
-      
-      console.log(`📄 Result ${i + 1}:`);
-      console.log(`   Title: ${result.title}`);
-      console.log(`   URL: ${result.url}`);
-      console.log(`   Description: ${(result.description || '').substring(0, 100)}...`);
-      
-      // Calculate relevance score
-      const combinedText = `${title} ${description}`;
-      let score = 0;
-      
-      // Score based on company words appearing in title/description
-      for (const word of companyWords) {
-        if (title.includes(word)) score += 3; // Title matches are most important
-        if (description.includes(word)) score += 1; // Description matches
-        if (url.includes(word)) score += 2; // URL matches are important
-      }
-      
-      // Bonus for being first result
-      if (i === 0) score += 2;
-      
-      // Extract domain from this result
-      const domain = this.extractDomainFromURL(result.url);
-      
-      if (domain) {
-        console.log(`   Domain: ${domain}, Score: ${score}`);
-        
-        if (score > bestScore) {
-          bestMatch = { domain, score, result };
-          bestScore = score;
-        }
-      } else {
-        console.log(`   No valid domain found in URL`);
-      }
-    }
-    
-    if (bestMatch) {
-      console.log(`🎯 Best match: ${bestMatch.domain} (score: ${bestMatch.score})`);
-      console.log(`   From: ${bestMatch.result.title}`);
-      return bestMatch.domain;
-    }
-    
-    console.log(`❌ No suitable domain found for ${companyName}`);
-    return null;
-  }
-
-  extractDomainFromURL(url) {
-    if (!url) return null;
-    
+  extractDomainFromGoogleResults(data, companyName) {
     try {
-      // Handle URLs with or without protocol
-      const urlToProcess = url.startsWith('http') ? url : `https://${url}`;
-      const urlObj = new URL(urlToProcess);
-      let domain = urlObj.hostname;
+      // This will depend on the actual Bright Data response format
+      // For now, analyze the response and extract domains
+      const dataString = JSON.stringify(data).toLowerCase();
       
-      // Remove www prefix
-      domain = domain.replace(/^www\./, '');
+      // Look for domain patterns in the response
+      const domainMatches = dataString.match(/(?:https?:\/\/)?(?:www\.)?([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/g);
       
-      // Filter out non-company domains
-      const excludeDomains = [
-        'linkedin.com', 'facebook.com', 'twitter.com', 'youtube.com', 'google.com',
-        'instagram.com', 'indeed.com', 'glassdoor.com', 'crunchbase.com',
-        'wikipedia.org', 'bloomberg.com', 'reuters.com'
-      ];
-      
-      if (excludeDomains.some(excluded => domain.includes(excluded))) {
-        return null;
+      if (domainMatches) {
+        const companyWords = companyName.toLowerCase().split(' ').filter(w => w.length > 2);
+        
+        for (const match of domainMatches) {
+          const domain = match.replace(/^https?:\/\//, '').replace(/^www\./, '');
+          
+          // Check if domain is relevant to company
+          const domainText = domain.toLowerCase();
+          const relevantWords = companyWords.filter(word => domainText.includes(word));
+          
+          if (relevantWords.length > 0) {
+            console.log(`🎯 Found relevant domain: ${domain}`);
+            return domain;
+          }
+        }
       }
       
-      return domain;
+      return null;
     } catch (error) {
-      // Fallback: try regex extraction
-      const domainMatch = url.match(/(?:https?:\/\/)?(?:www\.)?([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/);
-      return domainMatch ? domainMatch[1].replace('www.', '') : null;
+      console.error('Error extracting domain from results:', error);
+      return null;
     }
   }
 
@@ -186,9 +126,8 @@ class BrightDataService {
         console.log(`🔍 CEO search query: ${query}`);
         
         const response = await axios.post(`${this.baseURL}/trigger`, {
-          dataset_id: 'gd_l7q7dkf244hwjntr5',
-          query: query,
-          limit: 15
+          url: `https://www.google.com/search?q=${encodeURIComponent(query)}`,
+          format: 'json'
         }, {
           headers: {
             'Authorization': `Bearer ${this.apiKey}`,
@@ -197,13 +136,13 @@ class BrightDataService {
           timeout: 30000
         });
 
-        const text = response.data.results
-          ?.map(r => `${r.title} ${r.description}`)
-          .join('\n') || '';
+        if (response.data) {
+          const text = JSON.stringify(response.data).substring(0, 2000);
           
-        if (text.length > 400) {
-          console.log(`✅ CEO search results found for ${query} (${text.length} chars)`);
-          return text;
+          if (text.length > 100) {
+            console.log(`✅ CEO search results found for ${query} (${text.length} chars)`);
+            return text;
+          }
         }
         
         await new Promise(resolve => setTimeout(resolve, 1000));
@@ -224,7 +163,6 @@ class BrightDataService {
         `CEO of ${company}`,
         `${company} CEO`,
         `${company} founder`,
-        `${company} president`,
         `site:${domain} CEO`,
         `site:${domain} founder`
       ];

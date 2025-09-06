@@ -43,6 +43,8 @@ router.get('/debug/queues', async (req, res) => {
 // Clear queues for debugging
 router.post('/debug/clear-queues', async (req, res) => {
   try {
+    console.log('🧹 Clearing all queues...');
+    
     await domainQueue.empty();
     await ceoQueue.empty();
     
@@ -52,7 +54,7 @@ router.post('/debug/clear-queues', async (req, res) => {
     await domainQueue.clean(0, 'completed');
     await ceoQueue.clean(0, 'completed');
     
-    console.log('✅ All queues cleared');
+    console.log('✅ All queues cleared successfully');
     
     res.json({ 
       success: true, 
@@ -60,16 +62,13 @@ router.post('/debug/clear-queues', async (req, res) => {
     });
     
   } catch (error) {
-    console.error('Error clearing queues:', error);
+    console.error('❌ Error clearing queues:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
 // Batch duplicate checking
 router.post('/check-batch-duplicates', async (req, res) => {
-  console.log('=== BATCH DUPLICATE CHECK REQUEST ===');
-  console.log('Request received at:', new Date().toISOString());
-  
   try {
     const { leads } = req.body;
     
@@ -80,19 +79,17 @@ router.post('/check-batch-duplicates', async (req, res) => {
       return res.json({ duplicates: [] });
     }
     
-    console.log('Sample lead for duplicate check:', leads[0]);
-    
     const checkPromises = leads.map(async (lead, index) => {
       try {
         const { data: existingLead, error } = await supabase
           .from('leads')
           .select('id')
           .eq('first_name', lead.firstName)
-          .eq('last_name', lead.lastName)
+          .eq('last_name', lead.lastName || 'Unknown')
           .eq('company', lead.company)
           .single();
         
-        if (error && error.code !== 'PGRST116') { // PGRST116 = no rows found (not an error)
+        if (error && error.code !== 'PGRST116') {
           console.log(`⚠️ Duplicate check error for lead ${index}:`, error);
           return false;
         }
@@ -113,7 +110,6 @@ router.post('/check-batch-duplicates', async (req, res) => {
     const duplicateCount = results.filter(r => r).length;
     
     console.log(`✅ Duplicate check complete: ${duplicateCount} duplicates found out of ${leads.length}`);
-    console.log('=====================================');
     
     res.json({ duplicates: results });
     
@@ -127,15 +123,15 @@ router.post('/check-batch-duplicates', async (req, res) => {
 router.post('/extract', async (req, res) => {
   console.log('=== EXTRACTION REQUEST RECEIVED ===');
   console.log('Timestamp:', new Date().toISOString());
-  console.log('Request headers:', req.headers);
   console.log('Request body keys:', Object.keys(req.body));
-  console.log('Leads count:', req.body.leads?.length);
+  console.log('Leads count from extension:', req.body.leads?.length);
   console.log('File ID:', req.body.fileId);
   console.log('File name:', req.body.fileName);
   console.log('User ID:', req.body.userId);
   
   if (req.body.leads?.length > 0) {
-    console.log('Sample lead:', req.body.leads[0]);
+    console.log('First lead sample:', req.body.leads[0]);
+    console.log('Last lead sample:', req.body.leads[req.body.leads.length - 1]);
   }
   console.log('=====================================');
   
@@ -174,24 +170,36 @@ router.post('/extract', async (req, res) => {
     
     const insertedLeads = [];
     let skippedCount = 0;
+    let errorCount = 0;
     
-    console.log('💾 Starting lead insertion...');
+    console.log(`💾 Starting insertion of ${leads.length} leads...`);
     
     for (let i = 0; i < leads.length; i++) {
       const lead = leads[i];
       
       try {
-        const tempEmail = `${lead.firstName}.${lead.lastName}.${Date.now()}.${i}@temp.com`;
+        // Validate lead data
+        if (!lead.firstName || !lead.company) {
+          console.log(`❌ [${i + 1}] Invalid lead data:`, {
+            firstName: lead.firstName || 'MISSING',
+            lastName: lead.lastName || 'missing',
+            company: lead.company || 'MISSING'
+          });
+          skippedCount++;
+          continue;
+        }
         
-        console.log(`💾 [${i + 1}/${leads.length}] Inserting: ${lead.firstName} ${lead.lastName} - ${lead.company}`);
+        const tempEmail = `${lead.firstName}.${lead.lastName || 'unknown'}.${Date.now()}.${i}@temp.com`;
+        
+        console.log(`💾 [${i + 1}/${leads.length}] Inserting: ${lead.firstName} ${lead.lastName || 'Unknown'} - ${lead.company}`);
         
         const { data: leadData, error } = await supabase
           .from('leads')
           .insert({
-            first_name: lead.firstName || '',
-            last_name: lead.lastName || '',
+            first_name: lead.firstName,
+            last_name: lead.lastName || 'Unknown',
             email: tempEmail,
-            company: lead.company || '',
+            company: lead.company,
             title: lead.title || '',
             linkedin_url: lead.linkedinUrl || '',
             location: lead.location || '',
@@ -203,40 +211,39 @@ router.post('/extract', async (req, res) => {
           .single();
         
         if (error) {
-          console.log(`❌ [${i + 1}] Insert error:`, error);
-          skippedCount++;
+          console.error(`❌ [${i + 1}] Database insertion error:`, error);
+          errorCount++;
           continue;
         }
         
         if (leadData) {
           insertedLeads.push(leadData.id);
-          console.log(`✅ [${i + 1}] Inserted with ID: ${leadData.id}`);
+          console.log(`✅ [${i + 1}] Successfully inserted with ID: ${leadData.id}`);
           
           // Queue domain job
-          try {
-            await domainQueue.add('find-domain', {
-              leadId: leadData.id,
-              company: lead.company,
-              userId
-            }, {
-              delay: Math.random() * 1000
-            });
-            
-            console.log(`🔄 [${i + 1}] Queued domain search for: ${lead.company}`);
-          } catch (queueError) {
-            console.error(`❌ [${i + 1}] Queue error:`, queueError);
-          }
+          await domainQueue.add('find-domain', {
+            leadId: leadData.id,
+            company: lead.company,
+            userId
+          }, {
+            delay: Math.random() * 1000
+          });
+          
+          console.log(`🔄 [${i + 1}] Queued domain search for: ${lead.company}`);
         }
+        
       } catch (error) {
         console.error(`❌ [${i + 1}] Processing error:`, error);
-        skippedCount++;
+        errorCount++;
       }
     }
     
-    console.log('=== EXTRACTION SUMMARY ===');
+    console.log('=== INSERTION SUMMARY ===');
     console.log(`✅ Successfully inserted: ${insertedLeads.length}`);
-    console.log(`❌ Skipped/Failed: ${skippedCount}`);
+    console.log(`❌ Skipped (invalid data): ${skippedCount}`);
+    console.log(`💥 Errors: ${errorCount}`);
     console.log(`📊 Total processed: ${leads.length}`);
+    console.log(`📊 Expected vs Actual: ${leads.length} → ${insertedLeads.length}`);
     console.log('==========================');
     
     // Verify insertion by counting
@@ -256,6 +263,7 @@ router.post('/extract', async (req, res) => {
       fileId: actualFileId,
       insertedCount: insertedLeads.length,
       skippedCount: skippedCount,
+      errorCount: errorCount,
       totalLeads: leads.length,
       verifiedCount: verifyData?.length || 0
     };
