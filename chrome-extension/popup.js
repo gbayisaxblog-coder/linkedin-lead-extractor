@@ -33,10 +33,12 @@ function setupEventListeners() {
 
 async function loadFiles() {
   try {
+    console.log('🔄 Loading files from API...');
     const response = await fetch(`${API_BASE_URL}/files`);
-    if (!response.ok) throw new Error('Failed to load files');
+    if (!response.ok) throw new Error(`Failed to load files: ${response.status}`);
     
     files = await response.json();
+    console.log('✅ Files loaded:', files);
     
     fileSelect.innerHTML = '<option value="">-- Select File --</option>';
     files.forEach(file => {
@@ -46,6 +48,7 @@ async function loadFiles() {
       fileSelect.appendChild(option);
     });
   } catch (error) {
+    console.error('❌ Load files error:', error);
     showError('Failed to load files: ' + error.message);
   }
 }
@@ -78,15 +81,21 @@ async function createNewFile() {
   }
   
   try {
+    console.log(`🔄 Creating file: ${fileName}`);
     const response = await fetch(`${API_BASE_URL}/files`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name: fileName })
     });
     
-    if (!response.ok) throw new Error('Failed to create file');
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Failed to create file: ${errorText}`);
+    }
     
     const newFile = await response.json();
+    console.log('✅ File created:', newFile);
+    
     files.unshift(newFile);
     
     const option = document.createElement('option');
@@ -100,6 +109,7 @@ async function createNewFile() {
     newFileNameInput.value = '';
     showSuccess(`File "${fileName}" created successfully!`);
   } catch (error) {
+    console.error('❌ Create file error:', error);
     showError('Failed to create file: ' + error.message);
   }
 }
@@ -110,6 +120,10 @@ async function extractLinkedInData() {
     return;
   }
   
+  console.log('=== STARTING EXTRACTION ===');
+  console.log('Current file ID:', currentFileId);
+  console.log('API Base URL:', API_BASE_URL);
+  
   try {
     const pageSelect = document.getElementById('pageSelect');
     const maxPages = parseInt(pageSelect.value) || 1;
@@ -118,33 +132,33 @@ async function extractLinkedInData() {
     extractBtn.textContent = `⏳ Extracting ${maxPages} pages...`;
     
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    console.log('Current tab URL:', tab.url);
     
     if (!tab.url.includes('linkedin.com')) {
       throw new Error('Please navigate to a LinkedIn search results page first');
     }
     
     // STEP 1: Test API Connection
-    console.log('🔗 Testing API connection...');
+    console.log('🔗 Step 1: Testing API connection...');
     showSuccess('Step 1: Testing API connection...');
     
-    try {
-      const healthResponse = await fetch(`${API_BASE_URL.replace('/api', '')}/health`, {
-        method: 'GET',
-        headers: { 'Accept': 'application/json' }
-      });
-      
-      if (!healthResponse.ok) {
-        throw new Error(`API not reachable (${healthResponse.status})`);
-      }
-      
-      const healthData = await healthResponse.json();
-      console.log('✅ API connection successful:', healthData);
-    } catch (error) {
-      throw new Error(`API connection failed: ${error.message}`);
+    const healthUrl = `${API_BASE_URL.replace('/api', '')}/health`;
+    console.log('Health check URL:', healthUrl);
+    
+    const healthResponse = await fetch(healthUrl, {
+      method: 'GET',
+      headers: { 'Accept': 'application/json' }
+    });
+    
+    if (!healthResponse.ok) {
+      throw new Error(`API not reachable (${healthResponse.status})`);
     }
     
+    const healthData = await healthResponse.json();
+    console.log('✅ API connection successful:', healthData);
+    
     // STEP 2: Extract from LinkedIn
-    console.log('📋 Extracting from LinkedIn...');
+    console.log('📋 Step 2: Extracting from LinkedIn...');
     showSuccess('Step 2: Extracting from LinkedIn...');
     
     try {
@@ -152,16 +166,19 @@ async function extractLinkedInData() {
         target: { tabId: tab.id },
         files: ['content.js']
       });
+      console.log('✅ Content script injected');
     } catch (e) {
-      console.log('Content script injection:', e);
+      console.log('Content script injection result:', e);
     }
     
-    await new Promise(resolve => setTimeout(resolve, 1000));
+    await new Promise(resolve => setTimeout(resolve, 2000));
     
     const results = await new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
-        reject(new Error('LinkedIn extraction timeout'));
-      }, 120000);
+        reject(new Error('LinkedIn extraction timeout - no response from content script'));
+      }, 180000); // 3 minute timeout
+      
+      console.log('📨 Sending message to content script...');
       
       chrome.tabs.sendMessage(tab.id, { 
         action: 'extractLeads',
@@ -170,7 +187,10 @@ async function extractLinkedInData() {
       }, (response) => {
         clearTimeout(timeout);
         
+        console.log('📨 Content script response:', response);
+        
         if (chrome.runtime.lastError) {
+          console.error('❌ Runtime error:', chrome.runtime.lastError);
           reject(new Error(`Content script error: ${chrome.runtime.lastError.message}`));
           return;
         }
@@ -184,6 +204,7 @@ async function extractLinkedInData() {
     });
     
     console.log('✅ LinkedIn extraction successful:', results);
+    console.log('Extracted leads sample:', results.leads.slice(0, 3));
     
     if (!results.leads || results.leads.length === 0) {
       showSuccess('No new leads found - all profiles already in database!');
@@ -191,7 +212,7 @@ async function extractLinkedInData() {
     }
     
     // STEP 3: Send to Database
-    console.log(`📤 Sending ${results.leads.length} leads to database...`);
+    console.log(`📤 Step 3: Sending ${results.leads.length} leads to database...`);
     showSuccess(`Step 3: Sending ${results.leads.length} leads to database...`);
     
     const requestBody = {
@@ -201,9 +222,17 @@ async function extractLinkedInData() {
       userId: 'chrome_extension_user'
     };
     
-    console.log('📦 Request payload:', requestBody);
+    console.log('📦 Request payload preview:', {
+      leadsCount: requestBody.leads.length,
+      fileId: requestBody.fileId,
+      fileName: requestBody.fileName,
+      sampleLead: requestBody.leads[0]
+    });
     
-    const response = await fetch(`${API_BASE_URL}/extraction/extract`, {
+    const extractUrl = `${API_BASE_URL}/extraction/extract`;
+    console.log('Extract URL:', extractUrl);
+    
+    const response = await fetch(extractUrl, {
       method: 'POST',
       headers: { 
         'Content-Type': 'application/json',
@@ -213,6 +242,7 @@ async function extractLinkedInData() {
     });
     
     console.log(`📡 Response status: ${response.status}`);
+    console.log('📡 Response headers:', Object.fromEntries(response.headers.entries()));
     
     if (!response.ok) {
       const errorText = await response.text();
@@ -224,10 +254,10 @@ async function extractLinkedInData() {
     console.log('✅ Database save successful:', result);
     
     // STEP 4: Verify Database Save
-    console.log('🔍 Verifying database save...');
+    console.log('🔍 Step 4: Verifying database save...');
     showSuccess('Step 4: Verifying database save...');
     
-    await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2 seconds
+    await new Promise(resolve => setTimeout(resolve, 3000)); // Wait 3 seconds
     
     const verifyResponse = await fetch(`${API_BASE_URL}/extraction/status/${currentFileId}`);
     if (verifyResponse.ok) {
@@ -235,10 +265,12 @@ async function extractLinkedInData() {
       console.log('✅ Database verification:', stats);
       
       if (stats.current_total > 0) {
-        showSuccess(`✅ SUCCESS! ${result.insertedCount} leads saved to database. Processing started...`);
+        showSuccess(`✅ SUCCESS! ${result.insertedCount} leads saved to database. ${stats.current_total} total in file. Processing started...`);
       } else {
         showError('⚠️ Leads not found in database after save attempt');
       }
+    } else {
+      console.error('❌ Verification failed:', verifyResponse.status);
     }
     
     startPolling();
@@ -335,7 +367,7 @@ function showError(message) {
   div.className = 'error';
   div.textContent = message;
   messagesDiv.appendChild(div);
-  setTimeout(() => div.remove(), 5000);
+  setTimeout(() => div.remove(), 8000);
 }
 
 function showSuccess(message) {
