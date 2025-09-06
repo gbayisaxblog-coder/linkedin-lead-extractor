@@ -123,24 +123,45 @@ async function extractLinkedInData() {
       throw new Error('Please navigate to a LinkedIn search results page first');
     }
     
-    showSuccess(`Starting extraction of ${maxPages} pages with duplicate checking...`);
+    // STEP 1: Test API Connection
+    console.log('🔗 Testing API connection...');
+    showSuccess('Step 1: Testing API connection...');
     
-    // Inject content script if needed
+    try {
+      const healthResponse = await fetch(`${API_BASE_URL.replace('/api', '')}/health`, {
+        method: 'GET',
+        headers: { 'Accept': 'application/json' }
+      });
+      
+      if (!healthResponse.ok) {
+        throw new Error(`API not reachable (${healthResponse.status})`);
+      }
+      
+      const healthData = await healthResponse.json();
+      console.log('✅ API connection successful:', healthData);
+    } catch (error) {
+      throw new Error(`API connection failed: ${error.message}`);
+    }
+    
+    // STEP 2: Extract from LinkedIn
+    console.log('📋 Extracting from LinkedIn...');
+    showSuccess('Step 2: Extracting from LinkedIn...');
+    
     try {
       await chrome.scripting.executeScript({
         target: { tabId: tab.id },
         files: ['content.js']
       });
     } catch (e) {
-      console.log('Content script already injected or injection failed:', e);
+      console.log('Content script injection:', e);
     }
     
     await new Promise(resolve => setTimeout(resolve, 1000));
     
     const results = await new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
-        reject(new Error('Extraction timeout - make sure you\'re on a LinkedIn search results page'));
-      }, 120000); // 2 minute timeout for multiple pages
+        reject(new Error('LinkedIn extraction timeout'));
+      }, 120000);
       
       chrome.tabs.sendMessage(tab.id, { 
         action: 'extractLeads',
@@ -150,54 +171,88 @@ async function extractLinkedInData() {
         clearTimeout(timeout);
         
         if (chrome.runtime.lastError) {
-          reject(new Error(chrome.runtime.lastError.message));
+          reject(new Error(`Content script error: ${chrome.runtime.lastError.message}`));
           return;
         }
         
         if (response && response.success) {
           resolve(response);
         } else {
-          reject(new Error(response?.error || 'Unknown extraction error'));
+          reject(new Error(response?.error || 'LinkedIn extraction failed'));
         }
       });
     });
     
-    console.log('Extraction results:', results);
+    console.log('✅ LinkedIn extraction successful:', results);
     
     if (!results.leads || results.leads.length === 0) {
-      showSuccess('No new leads found - all profiles already in database or missing required data!');
+      showSuccess('No new leads found - all profiles already in database!');
       return;
     }
     
-    console.log('Sending leads to database:', results.leads);
+    // STEP 3: Send to Database
+    console.log(`📤 Sending ${results.leads.length} leads to database...`);
+    showSuccess(`Step 3: Sending ${results.leads.length} leads to database...`);
     
-    // Send extracted leads to backend
+    const requestBody = {
+      leads: results.leads,
+      fileId: currentFileId,
+      fileName: fileSelect.options[fileSelect.selectedIndex].text,
+      userId: 'chrome_extension_user'
+    };
+    
+    console.log('📦 Request payload:', requestBody);
+    
     const response = await fetch(`${API_BASE_URL}/extraction/extract`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        leads: results.leads,
-        fileId: currentFileId,
-        fileName: fileSelect.options[fileSelect.selectedIndex].text,
-        userId: 'chrome_extension_user'
-      })
+      headers: { 
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
+      },
+      body: JSON.stringify(requestBody)
     });
+    
+    console.log(`📡 Response status: ${response.status}`);
     
     if (!response.ok) {
       const errorText = await response.text();
-      throw new Error(`Server error: ${errorText}`);
+      console.error('❌ Server error response:', errorText);
+      throw new Error(`Database save failed (${response.status}): ${errorText}`);
     }
     
     const result = await response.json();
-    console.log('Server response:', result);
+    console.log('✅ Database save successful:', result);
     
-    showSuccess(`Successfully processed ${result.insertedCount} NEW leads from ${results.pagesProcessed || 1} pages! ${result.skippedCount || 0} duplicates skipped. Processing started...`);
+    // STEP 4: Verify Database Save
+    console.log('🔍 Verifying database save...');
+    showSuccess('Step 4: Verifying database save...');
+    
+    await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2 seconds
+    
+    const verifyResponse = await fetch(`${API_BASE_URL}/extraction/status/${currentFileId}`);
+    if (verifyResponse.ok) {
+      const stats = await verifyResponse.json();
+      console.log('✅ Database verification:', stats);
+      
+      if (stats.current_total > 0) {
+        showSuccess(`✅ SUCCESS! ${result.insertedCount} leads saved to database. Processing started...`);
+      } else {
+        showError('⚠️ Leads not found in database after save attempt');
+      }
+    }
     
     startPolling();
     
   } catch (error) {
-    console.error('Extraction error:', error);
-    showError('Extraction failed: ' + error.message);
+    console.error('❌ Complete error details:', error);
+    showError(`Extraction failed: ${error.message}`);
+    
+    // Additional debugging info
+    console.log('🔍 Debug info:');
+    console.log('- Current file ID:', currentFileId);
+    console.log('- API Base URL:', API_BASE_URL);
+    console.log('- Tab URL:', tab?.url);
+    
   } finally {
     extractBtn.disabled = false;
     extractBtn.textContent = '🚀 Extract LinkedIn Data';
