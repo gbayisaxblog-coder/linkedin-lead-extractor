@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    body { 
+      width: 380px; 
+      padding: 20px; 
+      font-family: Arial, sans-serif;
+      margin: 0;
+    }
+    
+    .header { 
+      text-align: center; 
+      margin-bottom: 20px; 
+      border-bottom: 1px solid #ddd;
+      padding-bottom: 15px;
+    }
+    
+    .header h2 {
+      color: #0073b1;
+      margin: 0;
+      font-size: 18px;
+    }
+    
+    .section { 
+      margin-bottom: 20px; 
+    }
+    
+    .file-section { 
+      border: 1px solid #ddd; 
+      padding: 15px; 
+      border-radius: 8px; 
+      background: #f9f9f9;
+    }
+    
+    select, input, button { 
+      width: 100%; 
+      padding: 10px; 
+      margin: 5px 0; 
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      box-sizing: border-box;
+    }
+    
+    button { 
+      background: #0073b1; 
+      color: white; 
+      border: none; 
+      cursor: pointer;
+    }
+    
+    button:hover:not(:disabled) { 
+      background: #005885; 
+    }
+    
+    button:disabled {
+      background: #ccc;
+      cursor: not-allowed;
+    }
+    
+    .extract-btn { 
+      background: #28a745; 
+      font-size: 16px;
+      padding: 12px;
+    }
+    
+    .download-btn {
+      background: #6366f1;
+    }
+    
+    .stats { 
+      background: #f0f9ff; 
+      padding: 15px; 
+      border-radius: 4px; 
+      font-size: 13px;
+    }
+    
+    .stats div {
+      display: flex;
+      justify-content: space-between;
+      margin: 5px 0;
+    }
+    
+    .error {
+      background: #fee2e2;
+      color: #dc2626;
+      padding: 10px;
+      border-radius: 4px;
+      font-size: 12px;
+      margin: 10px 0;
+    }
+    
+    .success {
+      background: #dcfce7;
+      color: #16a34a;
+      padding: 10px;
+      border-radius: 4px;
+      font-size: 12px;
+      margin: 10px 0;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h2>LinkedIn Lead Extractor</h2>
+  </div>
+  
+  <div class="section file-section">
+    <h3>📁 File Management</h3>
+    
+    <label>Select existing file:</label>
+    <select id="fileSelect">
+      <option value="">-- Select File --</option>
+    </select>
+    
+    <label>Or create new file:</label>
+    <input type="text" id="newFileName" placeholder="Enter new file name">
+    
+    <button id="createFileBtn">Create New File</button>
+  </div>
+  
+  <div class="section">
+    <button id="extractBtn" class="extract-btn" disabled>
+      🚀 Extract LinkedIn Data
+    </button>
+  </div>
+  
+  <div class="section">
+    <button id="downloadBtn" class="download-btn" disabled>
+      📥 Download CSV
+    </button>
+  </div>
+  
+  <div class="stats">
+    <div><span>Selected File:</span><span id="currentFile">None</span></div>
+    <div><span>Total Leads:</span><span id="totalLeads">0</span></div>
+    <div><span>Completed:</span><span id="completedLeads">0</span></div>
+    <div><span>With CEO:</span><span id="ceoLeads">0</span></div>
+  </div>
+  
+  <div id="messages"></div>
+  
+  <script src="popup.js"></script>
+</body>
+</html>
