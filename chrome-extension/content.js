@@ -2,28 +2,49 @@
 console.log('🚀 LinkedIn Lead Extractor content script loaded');
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  console.log('Message received:', request);
+  console.log('📨 Message received in content script:', request);
   
   if (request.action === 'extractLeads') {
     const maxPages = request.maxPages || 1;
     const apiBaseUrl = request.apiBaseUrl || 'https://linkedin-lead-extractor-production.up.railway.app/api';
     
-    extractAllLeadsWithPagination(maxPages, apiBaseUrl).then(result => {
-      sendResponse({ 
-        success: true, 
-        leads: result.leads,
-        pagesProcessed: result.pagesProcessed
-      });
-    }).catch(error => {
-      console.error('Extraction error:', error);
-      sendResponse({ 
-        success: false, 
-        error: error.message 
-      });
-    });
+    console.log(`🚀 Starting extraction for ${maxPages} pages`);
     
-    return true;
+    // Use async function but handle response properly
+    (async () => {
+      try {
+        const result = await extractAllLeadsWithPagination(maxPages, apiBaseUrl);
+        
+        console.log('📤 SENDING RESULTS BACK TO POPUP:', {
+          success: true,
+          leadsCount: result.leads.length,
+          pagesProcessed: result.pagesProcessed,
+          sampleLead: result.leads[0] || null
+        });
+        
+        // Send response back to popup
+        sendResponse({ 
+          success: true, 
+          leads: result.leads,
+          pagesProcessed: result.pagesProcessed
+        });
+        
+        console.log('✅ Response sent to popup script successfully');
+        
+      } catch (error) {
+        console.error('❌ Content script extraction error:', error);
+        
+        sendResponse({ 
+          success: false, 
+          error: error.message 
+        });
+      }
+    })();
+    
+    return true; // Keep message channel open for async response
   }
+  
+  return false;
 });
 
 async function extractAllLeadsWithPagination(maxPages = 1, apiBaseUrl) {
@@ -74,7 +95,8 @@ async function extractAllLeadsWithPagination(maxPages = 1, apiBaseUrl) {
     }
     
     console.log(`🎉 EXTRACTION COMPLETE!`);
-    console.log(`Total: ${totalStats.new} NEW, ${totalStats.duplicates} duplicates, ${totalStats.failed} failed`);
+    console.log(`Final results: ${totalStats.new} NEW leads extracted`);
+    console.log(`Summary: ${totalStats.duplicates} duplicates, ${totalStats.failed} failed`);
     
     updatePersistentStats(pagesProcessed, maxPages, `🎉 COMPLETE! ${totalStats.new} new leads found`, totalStats);
     
@@ -83,6 +105,9 @@ async function extractAllLeadsWithPagination(maxPages = 1, apiBaseUrl) {
       removeAllMarkers();
       removePersistentStats();
     }, 30000);
+    
+    // CRITICAL: Return leads array to popup
+    console.log(`📦 Returning ${allLeads.length} leads to popup script`);
     
     return {
       leads: allLeads,
@@ -105,9 +130,7 @@ async function extractLeadsWithFastDuplicateCheck(currentPage, apiBaseUrl, globa
   
   console.log(`🚀 Starting FAST extraction for page ${currentPage}`);
   
-  // STEP 1: FAST EXTRACTION (No database calls)
-  updatePersistentStats(currentPage, 1, `Page ${currentPage}: Fast extraction...`, globalStats);
-  
+  // STEP 1: FAST EXTRACTION
   window.scrollTo(0, 0);
   await new Promise(resolve => setTimeout(resolve, 1000));
   
@@ -118,34 +141,31 @@ async function extractLeadsWithFastDuplicateCheck(currentPage, apiBaseUrl, globa
   while (stableCount < 3) {
     const profileContainers = document.querySelectorAll('li.artdeco-list__item');
     
-    // Process profiles quickly
     for (let i = lastProfileCount; i < profileContainers.length; i++) {
       const container = profileContainers[i];
       
       if (container.getAttribute('data-extractor-processed')) continue;
       
-      // Quick scroll
       container.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      await new Promise(resolve => setTimeout(resolve, 200));
+      await new Promise(resolve => setTimeout(resolve, 220)); // 10% slower (was 200ms)
       
       const leadElement = container.querySelector('[data-x-search-result="LEAD"]');
       
       if (leadElement) {
         const lead = extractLeadFromElement(leadElement);
         
-        if (lead && lead.firstName && lead.lastName && lead.company) {
+        // Only require firstName and company
+        if (lead && lead.firstName && lead.company) {
           allExtractedData.push({ lead, container, index: totalProcessed + 1 });
-          console.log(`📋 Extracted: ${lead.firstName} ${lead.lastName} - ${lead.company}`);
+          console.log(`📋 Extracted: ${lead.firstName} ${lead.lastName || 'Unknown'} - ${lead.company}`);
         } else {
           markProfileAsExtracted(container, 'failed');
           failedCount++;
           
-          // Debug why it failed
           const issues = [];
           if (!lead?.firstName) issues.push('no firstName');
-          if (!lead?.lastName || lead?.lastName === 'Unknown') issues.push('no lastName');
           if (!lead?.company) issues.push('no company');
-          console.log(`❌ Failed: ${issues.join(', ')} | Found: ${lead?.firstName || 'none'} ${lead?.lastName || 'none'} - ${lead?.company || 'none'}`);
+          console.log(`❌ Failed: ${issues.join(', ')} | Found: ${lead?.firstName || 'none'} - ${lead?.company || 'none'}`);
         }
       } else {
         markProfileAsExtracted(container, 'failed');
@@ -169,7 +189,7 @@ async function extractLeadsWithFastDuplicateCheck(currentPage, apiBaseUrl, globa
     lastProfileCount = profileContainers.length;
     
     window.scrollBy(0, window.innerHeight * 0.6);
-    await new Promise(resolve => setTimeout(resolve, 1000));
+    await new Promise(resolve => setTimeout(resolve, 1100)); // 10% slower (was 1000ms)
     
     const newProfileContainers = document.querySelectorAll('li.artdeco-list__item');
     
@@ -193,7 +213,7 @@ async function extractLeadsWithFastDuplicateCheck(currentPage, apiBaseUrl, globa
     
     const leadsToCheck = allExtractedData.map(item => ({
       firstName: item.lead.firstName,
-      lastName: item.lead.lastName,
+      lastName: item.lead.lastName || 'Unknown',
       company: item.lead.company
     }));
     
@@ -209,11 +229,11 @@ async function extractLeadsWithFastDuplicateCheck(currentPage, apiBaseUrl, globa
       if (isDuplicate) {
         markProfileAsExtracted(container, 'duplicate');
         duplicateCount++;
-        console.log(`🔄 ${index}: DUPLICATE - ${lead.firstName} ${lead.lastName} - ${lead.company}`);
+        console.log(`🔄 ${index}: DUPLICATE - ${lead.firstName} ${lead.lastName || 'Unknown'} - ${lead.company}`);
       } else {
         newLeads.push(lead);
         markProfileAsExtracted(container, 'new');
-        console.log(`✓ ${index}: NEW - ${lead.firstName} ${lead.lastName} - ${lead.company}`);
+        console.log(`✓ ${index}: NEW - ${lead.firstName} ${lead.lastName || 'Unknown'} - ${lead.company}`);
       }
     }
   }
@@ -257,24 +277,23 @@ function extractLeadFromElement(element) {
   const lead = {};
   
   try {
-    // Extract name with better error handling
+    // Extract name
     const nameElement = element.querySelector('span[data-anonymize="person-name"]');
     if (nameElement) {
       const fullName = nameElement.textContent.trim();
       
       if (!fullName) {
-        console.log('❌ Empty name found');
         return null;
       }
       
-      // Clean up name more aggressively
+      // Clean up name
       const cleanName = fullName
-        .replace(/,?\s*(ChFC®|CLU®|CAP®|PhD|MBA|CPA|Esq\.?|Jr\.?|Sr\.?|III|II|IV)\s*/gi, '')
+        .replace(/,?\s*(ChFC®|CLU®|CAP®|PhD|MBA|CPA|Esq\.?|Jr\.?|Sr\.?|III|II|IV|PMP)\s*/gi, '')
         .replace(/\s+Advising.*$/gi, '')
         .replace(/\s+Legacy.*$/gi, '')
         .trim();
       
-      const nameParts = cleanName.split(' ').filter(part => part.length > 1); // Require at least 2 characters
+      const nameParts = cleanName.split(' ').filter(part => part.length > 1);
       
       if (nameParts.length >= 2) {
         lead.firstName = nameParts[0];
@@ -283,11 +302,9 @@ function extractLeadFromElement(element) {
         lead.firstName = nameParts[0];
         lead.lastName = 'Unknown';
       } else {
-        console.log(`❌ Invalid name format: "${fullName}" → "${cleanName}"`);
         return null;
       }
     } else {
-      console.log('❌ No name element found');
       return null;
     }
     
@@ -297,52 +314,33 @@ function extractLeadFromElement(element) {
       lead.title = titleElement.textContent.trim();
     }
     
-    // Extract company with multiple methods and better validation
+    // Extract company
     let company = '';
     
-    // Method 1: Company link
     const companyElement = element.querySelector('a[data-anonymize="company-name"]');
     if (companyElement) {
       company = companyElement.textContent.trim();
     }
     
-    // Method 2: Any link in subtitle
-    if (!company) {
-      const anyCompanyLink = element.querySelector('.artdeco-entity-lockup__subtitle a');
-      if (anyCompanyLink) {
-        company = anyCompanyLink.textContent.trim();
-      }
-    }
-    
-    // Method 3: Parse subtitle text
     if (!company) {
       const subtitleElement = element.querySelector('.artdeco-entity-lockup__subtitle');
       if (subtitleElement) {
         const text = subtitleElement.textContent;
         const parts = text.split('•').map(p => p.trim());
-        if (parts.length > 1 && parts[1].length > 2) {
+        if (parts.length > 1) {
           company = parts[1];
+        } else {
+          const anyLink = subtitleElement.querySelector('a');
+          if (anyLink) {
+            company = anyLink.textContent.trim();
+          }
         }
       }
     }
     
     if (company) {
-      // Clean up company name more thoroughly
-      company = company
-        .replace(/^[^\w\s]+\s*/, '') // Remove leading symbols
-        .replace(/\s+/g, ' ') // Normalize spaces
-        .replace(/\s+(Inc|LLC|Ltd|Corp|Co)\.?$/i, '') // Remove common suffixes
-        .trim();
-      
-      if (company.length > 2) { // Require at least 3 characters
-        lead.company = company;
-      } else {
-        console.log(`❌ Company name too short: "${company}"`);
-        return null;
-      }
-    } else {
-      console.log('❌ No company found');
-      return null;
+      company = company.replace(/^[^\w\s]+\s*/, '').replace(/\s+/g, ' ').trim();
+      lead.company = company;
     }
     
     // Extract location
@@ -507,7 +505,7 @@ async function waitForNewPageLoad() {
   });
 }
 
-// PERSISTENT stats indicator that never disappears
+// PERSISTENT stats indicator
 function addPersistentStatsIndicator(maxPages) {
   removePersistentStats();
   
@@ -663,7 +661,7 @@ function addExtractionIndicator() {
     z-index: 10000;
     font-family: Arial, sans-serif;
   `;
-  indicator.textContent = '✅ LinkedIn Extractor Ready - FAST batch duplicate checking';
+  indicator.textContent = '✅ LinkedIn Extractor Ready - Optimized timing';
   
   document.body.appendChild(indicator);
   
