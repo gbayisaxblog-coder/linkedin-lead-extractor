@@ -30,31 +30,38 @@ async function extractAllLeadsWithPagination(maxPages = 1, apiBaseUrl) {
   const allLeads = [];
   let currentPage = 1;
   let pagesProcessed = 0;
+  let totalStats = { new: 0, duplicates: 0, failed: 0, processed: 0 };
   
   console.log(`Starting LinkedIn lead extraction for ${maxPages} pages...`);
-  addProgressIndicator();
+  addPersistentStatsIndicator(maxPages);
   
   try {
     while (currentPage <= maxPages) {
-      updateProgressIndicator(currentPage, maxPages, `Extracting page ${currentPage}...`);
+      updatePersistentStats(currentPage, maxPages, `Extracting page ${currentPage}...`, totalStats);
       
-      // Extract all leads from current page with database checking
-      const pageLeads = await extractLeadsWithDatabaseCheck(currentPage, apiBaseUrl);
+      // Extract all leads from current page with FAST batch checking
+      const pageResult = await extractLeadsWithFastDuplicateCheck(currentPage, apiBaseUrl, totalStats);
       
-      if (pageLeads.length === 0) {
-        console.log(`No NEW leads found on page ${currentPage}, stopping extraction`);
+      if (pageResult.newLeads.length === 0 && pageResult.duplicates === 0) {
+        console.log(`No leads found on page ${currentPage}, stopping extraction`);
         break;
       }
       
-      console.log(`✅ Page ${currentPage}: Found ${pageLeads.length} NEW leads`);
-      allLeads.push(...pageLeads);
+      console.log(`✅ Page ${currentPage}: ${pageResult.newLeads.length} NEW, ${pageResult.duplicates} duplicates, ${pageResult.failed} failed`);
+      allLeads.push(...pageResult.newLeads);
       pagesProcessed = currentPage;
       
-      updateExtractionCount(allLeads.length);
+      // Update total stats
+      totalStats.new += pageResult.newLeads.length;
+      totalStats.duplicates += pageResult.duplicates;
+      totalStats.failed += pageResult.failed;
+      totalStats.processed += pageResult.totalProcessed;
+      
+      updatePersistentStats(currentPage, maxPages, `Page ${currentPage} complete`, totalStats);
       
       if (currentPage >= maxPages) break;
       
-      updateProgressIndicator(currentPage, maxPages, `Going to page ${currentPage + 1}...`);
+      updatePersistentStats(currentPage, maxPages, `Going to page ${currentPage + 1}...`, totalStats);
       
       const hasNextPage = await goToNextPage();
       if (!hasNextPage) {
@@ -67,14 +74,15 @@ async function extractAllLeadsWithPagination(maxPages = 1, apiBaseUrl) {
     }
     
     console.log(`🎉 EXTRACTION COMPLETE!`);
-    console.log(`Total NEW leads: ${allLeads.length} from ${pagesProcessed} pages`);
+    console.log(`Total: ${totalStats.new} NEW, ${totalStats.duplicates} duplicates, ${totalStats.failed} failed`);
     
-    // Keep markers visible for 10 seconds so you can see the results
+    updatePersistentStats(pagesProcessed, maxPages, `🎉 EXTRACTION COMPLETE!`, totalStats);
+    
+    // Keep stats visible for 30 seconds after completion
     setTimeout(() => {
       removeAllMarkers();
-    }, 10000);
-    
-    removeProgressIndicator();
+      removePersistentStats();
+    }, 30000);
     
     return {
       leads: allLeads,
@@ -84,135 +92,148 @@ async function extractAllLeadsWithPagination(maxPages = 1, apiBaseUrl) {
   } catch (error) {
     console.error('Error during extraction:', error);
     removeAllMarkers();
-    removeProgressIndicator();
+    removePersistentStats();
     throw error;
   }
 }
 
-async function extractLeadsWithDatabaseCheck(currentPage, apiBaseUrl) {
-  const allLeads = [];
+async function extractLeadsWithFastDuplicateCheck(currentPage, apiBaseUrl, globalStats) {
+  const allExtractedData = [];
+  const newLeads = [];
+  let failedCount = 0;
+  let duplicateCount = 0;
   
-  console.log(`🔍 Starting profile-by-profile database checking for page ${currentPage}`);
+  console.log(`🚀 Starting FAST extraction for page ${currentPage}`);
   
-  // Start from top
+  // STEP 1: FAST EXTRACTION (No database calls)
+  updatePersistentStats(currentPage, 1, `Page ${currentPage}: Fast extraction...`, globalStats);
+  
   window.scrollTo(0, 0);
-  await new Promise(resolve => setTimeout(resolve, 1500));
+  await new Promise(resolve => setTimeout(resolve, 1000));
   
   let lastProfileCount = 0;
   let stableCount = 0;
   let totalProcessed = 0;
   
   while (stableCount < 3) {
-    // Get all profile containers (including newly loaded ones)
     const profileContainers = document.querySelectorAll('li.artdeco-list__item');
     
-    console.log(`📋 Found ${profileContainers.length} total profiles (${profileContainers.length - lastProfileCount} new)`);
-    
-    // Process new profiles only
+    // Process profiles quickly
     for (let i = lastProfileCount; i < profileContainers.length; i++) {
       const container = profileContainers[i];
       
-      try {
-        // Skip if already processed
-        if (container.getAttribute('data-extractor-processed')) {
-          continue;
-        }
+      if (container.getAttribute('data-extractor-processed')) continue;
+      
+      // Quick scroll
+      container.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      await new Promise(resolve => setTimeout(resolve, 200));
+      
+      const leadElement = container.querySelector('[data-x-search-result="LEAD"]');
+      
+      if (leadElement) {
+        const lead = extractLeadFromElement(leadElement);
         
-        // Scroll to profile to trigger loading
-        container.scrollIntoView({ 
-          behavior: 'smooth', 
-          block: 'center' 
-        });
-        
-        // Wait for lazy loading
-        await new Promise(resolve => setTimeout(resolve, 500));
-        
-        // Extract lead data
-        const leadElement = container.querySelector('[data-x-search-result="LEAD"]');
-        
-        if (leadElement) {
-          const lead = extractLeadFromElement(leadElement);
-          
-          if (lead && lead.firstName && lead.lastName && lead.company) {
-            // Check if this person already exists in database
-            const alreadyExists = await checkLeadExists(lead.firstName, lead.lastName, lead.company, apiBaseUrl);
-            
-            if (alreadyExists) {
-              markProfileAsExtracted(container, 'duplicate');
-              console.log(`🔄 ${totalProcessed + 1}: DUPLICATE - ${lead.firstName} ${lead.lastName} - ${lead.company} (already in database)`);
-            } else {
-              allLeads.push(lead);
-              markProfileAsExtracted(container, 'new');
-              console.log(`✓ ${totalProcessed + 1}: NEW - ${lead.firstName} ${lead.lastName} - ${lead.company}`);
-            }
-          } else {
-            const missingData = [];
-            if (!lead || !lead.firstName) missingData.push('firstName');
-            if (!lead || !lead.lastName || lead.lastName === 'Unknown') missingData.push('lastName');
-            if (!lead || !lead.company) missingData.push('company');
-            
-            markProfileAsExtracted(container, 'failed');
-            console.log(`❌ ${totalProcessed + 1}: Missing ${missingData.join(', ')} | Found: ${lead?.firstName || 'none'} ${lead?.lastName || 'none'} - ${lead?.company || 'none'}`);
-          }
+        if (lead && lead.firstName && lead.lastName && lead.company) {
+          allExtractedData.push({ lead, container, index: totalProcessed + 1 });
         } else {
           markProfileAsExtracted(container, 'failed');
-          console.log(`❌ ${totalProcessed + 1}: No lead element found in container`);
+          failedCount++;
         }
-        
-        totalProcessed++;
-        updateExtractionCount(allLeads.length);
-        
-      } catch (error) {
-        console.error(`Error processing profile ${i + 1}:`, error);
+      } else {
         markProfileAsExtracted(container, 'failed');
+        failedCount++;
       }
+      
+      container.setAttribute('data-extractor-processed', 'true');
+      totalProcessed++;
+      
+      // Update stats during extraction
+      const currentStats = {
+        new: globalStats.new,
+        duplicates: globalStats.duplicates,
+        failed: globalStats.failed + failedCount,
+        processed: globalStats.processed + totalProcessed
+      };
+      updatePersistentStats(currentPage, 1, `Extracting... (${totalProcessed} processed)`, currentStats);
     }
     
     lastProfileCount = profileContainers.length;
     
-    // Scroll down to potentially load more profiles
-    const scrollAmount = window.innerHeight * 0.6;
-    window.scrollBy(0, scrollAmount);
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    window.scrollBy(0, window.innerHeight * 0.6);
+    await new Promise(resolve => setTimeout(resolve, 1000));
     
-    // Check for new profiles
     const newProfileContainers = document.querySelectorAll('li.artdeco-list__item');
     
     if (newProfileContainers.length > profileContainers.length) {
-      console.log(`📋 Loaded ${newProfileContainers.length - profileContainers.length} more profiles`);
       stableCount = 0;
     } else {
       stableCount++;
-      console.log(`🔄 No new profiles loaded. Stable count: ${stableCount}/3`);
     }
     
-    // Check if we've reached pagination
     const paginationVisible = document.querySelector('.artdeco-pagination')?.getBoundingClientRect();
     if (paginationVisible && paginationVisible.top < window.innerHeight) {
-      console.log('📄 Reached pagination area');
       break;
     }
   }
   
-  console.log(`✅ Page ${currentPage} complete: ${allLeads.length} NEW leads from ${totalProcessed} profiles processed`);
-  return allLeads;
+  console.log(`📋 Fast extraction complete: ${allExtractedData.length} potential leads`);
+  
+  // STEP 2: BATCH DUPLICATE CHECK
+  if (allExtractedData.length > 0) {
+    updatePersistentStats(currentPage, 1, `Page ${currentPage}: Checking ${allExtractedData.length} leads for duplicates...`, globalStats);
+    
+    const leadsToCheck = allExtractedData.map(item => ({
+      firstName: item.lead.firstName,
+      lastName: item.lead.lastName,
+      company: item.lead.company
+    }));
+    
+    const duplicateResults = await checkBatchDuplicates(leadsToCheck, apiBaseUrl);
+    
+    // STEP 3: APPLY MARKERS ALL AT ONCE
+    updatePersistentStats(currentPage, 1, `Page ${currentPage}: Applying markers...`, globalStats);
+    
+    for (let i = 0; i < allExtractedData.length; i++) {
+      const { lead, container, index } = allExtractedData[i];
+      const isDuplicate = duplicateResults[i];
+      
+      if (isDuplicate) {
+        markProfileAsExtracted(container, 'duplicate');
+        duplicateCount++;
+        console.log(`🔄 ${index}: DUPLICATE - ${lead.firstName} ${lead.lastName} - ${lead.company}`);
+      } else {
+        newLeads.push(lead);
+        markProfileAsExtracted(container, 'new');
+        console.log(`✓ ${index}: NEW - ${lead.firstName} ${lead.lastName} - ${lead.company}`);
+      }
+    }
+  }
+  
+  console.log(`✅ Page ${currentPage} complete: ${newLeads.length} NEW, ${duplicateCount} duplicates, ${failedCount} failed`);
+  
+  return {
+    newLeads: newLeads,
+    duplicates: duplicateCount,
+    failed: failedCount,
+    totalProcessed: totalProcessed
+  };
 }
 
-async function checkLeadExists(firstName, lastName, company, apiBaseUrl) {
+async function checkBatchDuplicates(leads, apiBaseUrl) {
   try {
-    const response = await fetch(`${apiBaseUrl}/extraction/check-single-duplicate`, {
+    const response = await fetch(`${apiBaseUrl}/extraction/check-batch-duplicates`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ firstName, lastName, company })
+      body: JSON.stringify({ leads })
     });
     
-    if (!response.ok) return false;
+    if (!response.ok) return leads.map(() => false);
     
     const result = await response.json();
-    return result.exists || false;
+    return result.duplicates || leads.map(() => false);
   } catch (error) {
-    console.error('Error checking lead existence:', error);
-    return false;
+    console.error('Error checking batch duplicates:', error);
+    return leads.map(() => false);
   }
 }
 
@@ -248,26 +269,22 @@ function extractLeadFromElement(element) {
       lead.title = titleElement.textContent.trim();
     }
     
-    // Extract company with multiple methods
+    // Extract company
     let company = '';
     
-    // Method 1: Company link
     const companyElement = element.querySelector('a[data-anonymize="company-name"]');
     if (companyElement) {
       company = companyElement.textContent.trim();
     }
     
-    // Method 2: Parse subtitle if no company link
     if (!company) {
       const subtitleElement = element.querySelector('.artdeco-entity-lockup__subtitle');
       if (subtitleElement) {
         const text = subtitleElement.textContent;
-        // Look for company after bullet point
         const parts = text.split('•').map(p => p.trim());
         if (parts.length > 1) {
           company = parts[1];
         } else {
-          // Look for any link in subtitle
           const anyLink = subtitleElement.querySelector('a');
           if (anyLink) {
             company = anyLink.textContent.trim();
@@ -277,7 +294,6 @@ function extractLeadFromElement(element) {
     }
     
     if (company) {
-      // Clean up company name
       company = company.replace(/^[^\w\s]+\s*/, '').replace(/\s+/g, ' ').trim();
       lead.company = company;
     }
@@ -303,10 +319,8 @@ function extractLeadFromElement(element) {
 
 // Updated marking function with 3 states
 function markProfileAsExtracted(container, status) {
-  // Mark as processed
   container.setAttribute('data-extractor-processed', 'true');
   
-  // Add visual marker
   const existingMarker = container.querySelector('.extractor-marker');
   if (existingMarker) {
     existingMarker.remove();
@@ -315,7 +329,6 @@ function markProfileAsExtracted(container, status) {
   const marker = document.createElement('div');
   marker.className = 'extractor-marker';
   
-  // 3 different marker styles
   let backgroundColor, emoji, title;
   
   if (status === 'new') {
@@ -354,7 +367,6 @@ function markProfileAsExtracted(container, status) {
   marker.textContent = emoji;
   marker.title = title;
   
-  // Make container relative if needed
   const containerStyle = window.getComputedStyle(container);
   if (containerStyle.position === 'static') {
     container.style.position = 'relative';
@@ -378,14 +390,12 @@ async function goToNextPage() {
   try {
     console.log('🔍 Looking for next page button...');
     
-    // Scroll to pagination area
     const paginationElement = document.querySelector('.artdeco-pagination');
     if (paginationElement) {
       paginationElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
       await new Promise(resolve => setTimeout(resolve, 2000));
     }
     
-    // Find current page number
     const currentPageElement = document.querySelector('[aria-current="true"]');
     let nextPageNum = 2;
     
@@ -395,7 +405,6 @@ async function goToNextPage() {
       console.log(`📄 Current page: ${currentPageNum}, looking for page: ${nextPageNum}`);
     }
     
-    // Find next page button
     let nextButton = document.querySelector(`[data-test-pagination-page-btn="${nextPageNum}"] button`);
     
     if (!nextButton) {
@@ -408,15 +417,10 @@ async function goToNextPage() {
     }
     
     console.log(`✅ Found next page button for page ${nextPageNum}`);
-    
-    // Click the button
     nextButton.click();
-    
     console.log('🔄 Clicked next page, waiting for load...');
     
-    // Wait for new page to load
     await waitForNewPageLoad();
-    
     return true;
     
   } catch (error) {
@@ -455,62 +459,276 @@ async function waitForNewPageLoad() {
   });
 }
 
-// Progress indicator functions
-function addProgressIndicator() {
-  removeProgressIndicator();
+// FAST extraction with batch duplicate checking
+async function extractLeadsWithFastDuplicateCheck(currentPage, apiBaseUrl, globalStats) {
+  const allExtractedData = [];
+  const newLeads = [];
+  let failedCount = 0;
+  let duplicateCount = 0;
+  
+  console.log(`🚀 Starting FAST extraction for page ${currentPage}`);
+  
+  // STEP 1: FAST EXTRACTION
+  window.scrollTo(0, 0);
+  await new Promise(resolve => setTimeout(resolve, 1000));
+  
+  let lastProfileCount = 0;
+  let stableCount = 0;
+  let totalProcessed = 0;
+  
+  while (stableCount < 3) {
+    const profileContainers = document.querySelectorAll('li.artdeco-list__item');
+    
+    for (let i = lastProfileCount; i < profileContainers.length; i++) {
+      const container = profileContainers[i];
+      
+      if (container.getAttribute('data-extractor-processed')) continue;
+      
+      container.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      await new Promise(resolve => setTimeout(resolve, 200));
+      
+      const leadElement = container.querySelector('[data-x-search-result="LEAD"]');
+      
+      if (leadElement) {
+        const lead = extractLeadFromElement(leadElement);
+        
+        if (lead && lead.firstName && lead.lastName && lead.company) {
+          allExtractedData.push({ lead, container, index: totalProcessed + 1 });
+        } else {
+          markProfileAsExtracted(container, 'failed');
+          failedCount++;
+        }
+      } else {
+        markProfileAsExtracted(container, 'failed');
+        failedCount++;
+      }
+      
+      container.setAttribute('data-extractor-processed', 'true');
+      totalProcessed++;
+      
+      // Update stats in real-time
+      const currentStats = {
+        new: globalStats.new,
+        duplicates: globalStats.duplicates,
+        failed: globalStats.failed + failedCount,
+        processed: globalStats.processed + totalProcessed
+      };
+      updatePersistentStats(currentPage, 1, `Processing profile ${totalProcessed}...`, currentStats);
+    }
+    
+    lastProfileCount = profileContainers.length;
+    
+    window.scrollBy(0, window.innerHeight * 0.6);
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    
+    const newProfileContainers = document.querySelectorAll('li.artdeco-list__item');
+    
+    if (newProfileContainers.length > profileContainers.length) {
+      stableCount = 0;
+    } else {
+      stableCount++;
+    }
+    
+    const paginationVisible = document.querySelector('.artdeco-pagination')?.getBoundingClientRect();
+    if (paginationVisible && paginationVisible.top < window.innerHeight) {
+      break;
+    }
+  }
+  
+  console.log(`📋 Fast extraction complete: ${allExtractedData.length} potential leads`);
+  
+  // STEP 2: BATCH DUPLICATE CHECK
+  if (allExtractedData.length > 0) {
+    updatePersistentStats(currentPage, 1, `Page ${currentPage}: Checking ${allExtractedData.length} leads for duplicates...`, globalStats);
+    
+    const leadsToCheck = allExtractedData.map(item => ({
+      firstName: item.lead.firstName,
+      lastName: item.lead.lastName,
+      company: item.lead.company
+    }));
+    
+    const duplicateResults = await checkBatchDuplicates(leadsToCheck, apiBaseUrl);
+    
+    // STEP 3: APPLY MARKERS
+    updatePersistentStats(currentPage, 1, `Page ${currentPage}: Applying markers...`, globalStats);
+    
+    for (let i = 0; i < allExtractedData.length; i++) {
+      const { lead, container, index } = allExtractedData[i];
+      const isDuplicate = duplicateResults[i];
+      
+      if (isDuplicate) {
+        markProfileAsExtracted(container, 'duplicate');
+        duplicateCount++;
+        console.log(`🔄 ${index}: DUPLICATE - ${lead.firstName} ${lead.lastName} - ${lead.company}`);
+      } else {
+        newLeads.push(lead);
+        markProfileAsExtracted(container, 'new');
+        console.log(`✓ ${index}: NEW - ${lead.firstName} ${lead.lastName} - ${lead.company}`);
+      }
+    }
+  }
+  
+  return {
+    newLeads: newLeads,
+    duplicates: duplicateCount,
+    failed: failedCount,
+    totalProcessed: totalProcessed
+  };
+}
+
+async function checkBatchDuplicates(leads, apiBaseUrl) {
+  try {
+    const response = await fetch(`${apiBaseUrl}/extraction/check-batch-duplicates`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ leads })
+    });
+    
+    if (!response.ok) return leads.map(() => false);
+    
+    const result = await response.json();
+    return result.duplicates || leads.map(() => false);
+  } catch (error) {
+    console.error('Error checking batch duplicates:', error);
+    return leads.map(() => false);
+  }
+}
+
+// PERSISTENT stats indicator that never disappears
+function addPersistentStatsIndicator(maxPages) {
+  removePersistentStats();
   
   const indicator = document.createElement('div');
-  indicator.id = 'linkedin-extractor-progress';
+  indicator.id = 'linkedin-extractor-persistent-stats';
   indicator.style.cssText = `
     position: fixed;
     top: 20px;
     right: 20px;
-    background: #0073b1;
+    background: linear-gradient(135deg, #0073b1, #005885);
     color: white;
-    padding: 15px 20px;
-    border-radius: 8px;
+    padding: 20px;
+    border-radius: 12px;
     font-size: 14px;
     z-index: 10000;
     font-family: Arial, sans-serif;
-    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-    min-width: 300px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+    min-width: 380px;
+    backdrop-filter: blur(10px);
+    border: 1px solid rgba(255,255,255,0.1);
   `;
   
   indicator.innerHTML = `
-    <div style="font-weight: bold; margin-bottom: 8px;">🚀 LinkedIn Lead Extraction</div>
-    <div id="progress-text">Preparing...</div>
-    <div style="background: rgba(255,255,255,0.3); height: 6px; border-radius: 3px; margin-top: 8px;">
-      <div id="progress-bar" style="background: white; height: 100%; border-radius: 3px; width: 0%; transition: width 0.5s;"></div>
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+      <div style="font-weight: bold; font-size: 16px;">🚀 LinkedIn Lead Extractor</div>
+      <div id="minimize-stats" style="cursor: pointer; font-size: 14px; opacity: 0.7; padding: 4px; background: rgba(255,255,255,0.1); border-radius: 4px;" title="Minimize">−</div>
     </div>
-    <div style="font-size: 11px; margin-top: 5px; opacity: 0.9;" id="progress-details">Starting...</div>
-    <div style="font-size: 12px; margin-top: 3px; font-weight: bold; color: #90EE90;" id="extraction-count">NEW Leads: 0</div>
+    
+    <div style="margin-bottom: 12px;">
+      <div id="progress-text" style="font-weight: 600; margin-bottom: 4px;">Preparing...</div>
+      <div style="background: rgba(255,255,255,0.3); height: 8px; border-radius: 4px;">
+        <div id="progress-bar" style="background: #90EE90; height: 100%; border-radius: 4px; width: 0%; transition: width 0.5s; box-shadow: 0 0 10px rgba(144,238,144,0.5);"></div>
+      </div>
+      <div id="progress-details" style="font-size: 11px; margin-top: 4px; opacity: 0.9;">Starting extraction...</div>
+    </div>
+    
+    <div style="border-top: 1px solid rgba(255,255,255,0.2); padding-top: 12px;">
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; font-size: 13px; margin-bottom: 12px;">
+        <div>
+          <div style="color: #90EE90; font-weight: bold; margin-bottom: 4px;">
+            <span style="font-size: 16px;">✓</span> <span id="new-count">NEW: 0</span>
+          </div>
+          <div style="color: #FFD700; font-weight: bold; margin-bottom: 4px;">
+            <span style="font-size: 16px;">🔄</span> <span id="duplicate-count">DUPLICATES: 0</span>
+          </div>
+        </div>
+        <div>
+          <div style="color: #FF6B6B; font-weight: bold; margin-bottom: 4px;">
+            <span style="font-size: 16px;">✗</span> <span id="failed-count">FAILED: 0</span>
+          </div>
+          <div style="color: #87CEEB; font-weight: bold; margin-bottom: 4px;">
+            <span style="font-size: 16px;">📊</span> <span id="total-processed">PROCESSED: 0</span>
+          </div>
+        </div>
+      </div>
+      
+      <div style="border-top: 1px solid rgba(255,255,255,0.1); padding-top: 12px;">
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 12px;">
+          <div>⏱️ <span id="extraction-time">00:00</span></div>
+          <div>📄 Page: <span id="current-page-display">1</span>/<span id="total-pages-display">${maxPages}</span></div>
+        </div>
+      </div>
+    </div>
   `;
   
   document.body.appendChild(indicator);
+  
+  // Add minimize functionality
+  document.getElementById('minimize-stats').addEventListener('click', () => {
+    const content = indicator.querySelector('div:nth-child(2)');
+    const stats = indicator.querySelector('div:nth-child(3)');
+    const minimizeBtn = document.getElementById('minimize-stats');
+    
+    if (content.style.display === 'none') {
+      content.style.display = 'block';
+      stats.style.display = 'block';
+      minimizeBtn.textContent = '−';
+      minimizeBtn.title = 'Minimize';
+    } else {
+      content.style.display = 'none';
+      stats.style.display = 'none';
+      minimizeBtn.textContent = '+';
+      minimizeBtn.title = 'Expand';
+    }
+  });
+  
+  // Start timer
+  const startTime = Date.now();
+  const timer = setInterval(() => {
+    const elapsed = Math.floor((Date.now() - startTime) / 1000);
+    const minutes = Math.floor(elapsed / 60);
+    const seconds = elapsed % 60;
+    const timeDisplay = document.getElementById('extraction-time');
+    if (timeDisplay) {
+      timeDisplay.textContent = `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+    }
+  }, 1000);
+  
+  indicator.setAttribute('data-timer-id', timer);
 }
 
-function updateProgressIndicator(currentPage, maxPages, details) {
+function updatePersistentStats(currentPage, maxPages, details, stats) {
   const progressText = document.getElementById('progress-text');
   const progressBar = document.getElementById('progress-bar');
   const progressDetails = document.getElementById('progress-details');
+  const currentPageDisplay = document.getElementById('current-page-display');
+  const newCount = document.getElementById('new-count');
+  const duplicateCount = document.getElementById('duplicate-count');
+  const failedCount = document.getElementById('failed-count');
+  const totalProcessedCount = document.getElementById('total-processed');
   
   if (progressText && progressBar && progressDetails) {
     progressText.textContent = `Page ${currentPage} of ${maxPages}`;
     progressBar.style.width = `${(currentPage / maxPages) * 100}%`;
     progressDetails.textContent = details || 'Processing...';
   }
-}
-
-function updateExtractionCount(count) {
-  const extractionCount = document.getElementById('extraction-count');
-  if (extractionCount) {
-    extractionCount.textContent = `NEW Leads: ${count}`;
+  
+  if (currentPageDisplay) {
+    currentPageDisplay.textContent = currentPage;
   }
+  
+  if (newCount) newCount.textContent = `NEW: ${stats.new}`;
+  if (duplicateCount) duplicateCount.textContent = `DUPLICATES: ${stats.duplicates}`;
+  if (failedCount) failedCount.textContent = `FAILED: ${stats.failed}`;
+  if (totalProcessedCount) totalProcessedCount.textContent = `PROCESSED: ${stats.processed}`;
 }
 
-function removeProgressIndicator() {
-  const indicator = document.getElementById('linkedin-extractor-progress');
+function removePersistentStats() {
+  const indicator = document.getElementById('linkedin-extractor-persistent-stats');
   if (indicator) {
+    const timerId = indicator.getAttribute('data-timer-id');
+    if (timerId) {
+      clearInterval(parseInt(timerId));
+    }
     indicator.remove();
   }
 }
@@ -533,7 +751,7 @@ function addExtractionIndicator() {
     z-index: 10000;
     font-family: Arial, sans-serif;
   `;
-  indicator.textContent = '✅ LinkedIn Extractor Ready - Database duplicate checking enabled';
+  indicator.textContent = '✅ LinkedIn Extractor Ready - FAST batch duplicate checking';
   
   document.body.appendChild(indicator);
   

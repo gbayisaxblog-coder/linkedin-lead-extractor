@@ -5,6 +5,44 @@ const { domainQueue, ceoQueue } = require('../utils/queue');
 
 const router = express.Router();
 
+// Fast batch duplicate checking
+router.post('/check-batch-duplicates', async (req, res) => {
+  try {
+    const { leads } = req.body;
+    
+    if (!leads || !Array.isArray(leads)) {
+      return res.json({ duplicates: [] });
+    }
+    
+    const duplicateResults = [];
+    
+    // Check all leads in parallel for better performance
+    const checkPromises = leads.map(async (lead) => {
+      try {
+        const { data: existingLead } = await supabase
+          .from('leads')
+          .select('id')
+          .eq('first_name', lead.firstName)
+          .eq('last_name', lead.lastName)
+          .eq('company', lead.company)
+          .single();
+        
+        return !!existingLead;
+      } catch (error) {
+        return false;
+      }
+    });
+    
+    const results = await Promise.all(checkPromises);
+    
+    res.json({ duplicates: results });
+    
+  } catch (error) {
+    console.error('Batch duplicate check error:', error);
+    res.json({ duplicates: [] });
+  }
+});
+
 // Check for single duplicate lead
 router.post('/check-single-duplicate', async (req, res) => {
   try {
@@ -21,7 +59,6 @@ router.post('/check-single-duplicate', async (req, res) => {
     res.json({ exists: !!existingLead });
     
   } catch (error) {
-    // No match found or error - assume doesn't exist
     res.json({ exists: false });
   }
 });
@@ -53,25 +90,10 @@ router.post('/extract', async (req, res) => {
     
     for (const lead of leads) {
       try {
-        // Check if this person already exists globally
-        const { data: existingLead } = await supabase
-          .from('leads')
-          .select('id')
-          .eq('first_name', lead.firstName || '')
-          .eq('last_name', lead.lastName || '')
-          .eq('company', lead.company || '')
-          .single();
-        
-        if (existingLead) {
-          console.log(`Skipping duplicate: ${lead.firstName} ${lead.lastName} - ${lead.company} (already exists)`);
-          skippedCount++;
-          continue;
-        }
-        
         // Generate unique email
         const tempEmail = `${lead.firstName}.${lead.lastName}.${Date.now()}@temp.com`;
         
-        const { data: leadData } = await supabase
+        const { data: leadData, error } = await supabase
           .from('leads')
           .insert({
             first_name: lead.firstName || '',
@@ -87,6 +109,12 @@ router.post('/extract', async (req, res) => {
           })
           .select()
           .single();
+        
+        if (error) {
+          console.log(`Error inserting lead: ${error.message}`);
+          skippedCount++;
+          continue;
+        }
         
         if (leadData) {
           insertedLeads.push(leadData.id);
@@ -109,7 +137,7 @@ router.post('/extract', async (req, res) => {
           }
         }
       } catch (error) {
-        console.error('Error inserting lead:', error);
+        console.error('Error processing lead:', error);
         skippedCount++;
       }
     }
