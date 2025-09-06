@@ -2,7 +2,6 @@ const Queue = require('bull');
 
 console.log('🔄 Setting up queues...');
 
-// Create queues with proper Redis connection
 const domainQueue = new Queue('domain discovery', process.env.REDIS_URL, {
   defaultJobOptions: {
     removeOnComplete: 5,
@@ -30,18 +29,15 @@ const ceoQueue = new Queue('ceo finding', process.env.REDIS_URL, {
   }
 });
 
-// Set up processors with error handling
 console.log('🔧 Setting up queue processors...');
 
 try {
-  // Set up domain queue processor
   domainQueue.process('find-domain', 3, async (job) => {
-    console.log(`🔍 Domain worker processing lead ${job.data.leadId}`);
+    console.log(`🌐 Domain worker processing lead ${job.data.leadId}`);
     const domainWorker = require('../workers/domainWorker');
     return await domainWorker(job);
   });
 
-  // Set up CEO queue processor  
   ceoQueue.process('find-ceo', 2, async (job) => {
     console.log(`👔 CEO worker processing lead ${job.data.leadId}`);
     const ceoWorker = require('../workers/ceoWorker');
@@ -53,7 +49,7 @@ try {
   console.error('❌ Error setting up queue processors:', error);
 }
 
-// Add event listeners for debugging
+// Event listeners for debugging
 domainQueue.on('completed', (job, result) => {
   console.log(`✅ Domain job completed for lead ${job.data.leadId}:`, result);
 });
@@ -68,14 +64,6 @@ domainQueue.on('failed', (job, err) => {
 
 ceoQueue.on('failed', (job, err) => {
   console.log(`❌ CEO job failed for lead ${job.data.leadId}:`, err.message);
-});
-
-domainQueue.on('error', (error) => {
-  console.error('❌ Domain queue error:', error);
-});
-
-ceoQueue.on('error', (error) => {
-  console.error('❌ CEO queue error:', error);
 });
 
 module.exports = {

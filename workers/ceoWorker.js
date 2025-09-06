@@ -6,10 +6,10 @@ module.exports = async function(job) {
   console.log(`👔 CEO worker started for lead ${leadId}: ${company} (${domain})`);
   
   try {
-    // Simple test CEO name for now
+    // TEST: Generate simple CEO name
     const testCeoName = `Test CEO of ${company}`;
     
-    console.log(`✅ Test CEO found for ${company}: ${testCeoName}`);
+    console.log(`✅ Generated test CEO for ${company}: ${testCeoName}`);
     
     // Update the lead
     const { error: updateError } = await supabase

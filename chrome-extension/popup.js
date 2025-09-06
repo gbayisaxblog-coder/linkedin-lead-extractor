@@ -162,13 +162,16 @@ async function extractLinkedInData() {
       });
     });
     
+    console.log('Extraction results:', results);
+    
     if (!results.leads || results.leads.length === 0) {
-      showSuccess('No new leads found - all profiles already in database!');
+      showSuccess('No new leads found - all profiles already in database or missing required data!');
       return;
     }
     
-    console.log('New leads to process:', results.leads);
+    console.log('Sending leads to database:', results.leads);
     
+    // Send extracted leads to backend
     const response = await fetch(`${API_BASE_URL}/extraction/extract`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -186,7 +189,9 @@ async function extractLinkedInData() {
     }
     
     const result = await response.json();
-    showSuccess(`Successfully processed ${result.insertedCount} NEW leads from ${results.pagesProcessed || 1} pages! Processing started...`);
+    console.log('Server response:', result);
+    
+    showSuccess(`Successfully processed ${result.insertedCount} NEW leads from ${results.pagesProcessed || 1} pages! ${result.skippedCount || 0} duplicates skipped. Processing started...`);
     
     startPolling();
     

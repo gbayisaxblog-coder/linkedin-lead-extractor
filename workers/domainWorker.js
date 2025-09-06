@@ -1,60 +1,47 @@
-const BrightDataService = require('../services/brightdata');
-const cache = require('../services/cache');
 const supabase = require('../utils/database');
 const { ceoQueue } = require('../utils/queue');
-
-const brightData = new BrightDataService();
 
 module.exports = async function(job) {
   const { leadId, company, userId } = job.data;
   
+  console.log(`🌐 Domain worker started for lead ${leadId}: ${company}`);
+  
   try {
-    const cacheKey = `domain:${company.toLowerCase()}`;
-    let domain = await cache.get(cacheKey);
+    // TEST: Generate simple domain from company name
+    const simpleDomain = `${company.toLowerCase().replace(/[^a-z]/g, '')}.com`;
     
-    if (!domain) {
-      domain = await brightData.findDomain(company);
-      
-      if (domain) {
-        await cache.set(cacheKey, domain, 604800); // Cache for 7 days
-      }
+    console.log(`✅ Generated test domain for ${company}: ${simpleDomain}`);
+    
+    // Update lead with domain
+    const { error: updateError } = await supabase
+      .from('leads')
+      .update({
+        domain: simpleDomain,
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', leadId);
+    
+    if (updateError) {
+      throw updateError;
     }
     
-    if (domain) {
-      await supabase
-        .from('leads')
-        .update({
-          domain: domain,
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', leadId);
-      
-      // Queue CEO finding job
-      await ceoQueue.add('find-ceo', {
-        leadId,
-        domain,
-        company,
-        userId,
-        retryCount: 0
-      }, {
-        delay: Math.random() * 2000
-      });
-      
-      return { success: true, domain };
-    } else {
-      await supabase
-        .from('leads')
-        .update({
-          status: 'failed',
-          processed_at: new Date().toISOString()
-        })
-        .eq('id', leadId);
-      
-      return { success: false, error: 'Domain not found' };
-    }
+    // Queue CEO finding job
+    await ceoQueue.add('find-ceo', {
+      leadId,
+      domain: simpleDomain,
+      company,
+      userId,
+      retryCount: 0
+    }, {
+      delay: Math.random() * 1000
+    });
+    
+    console.log(`✅ Queued CEO job for lead ${leadId}`);
+    
+    return { success: true, domain: simpleDomain };
     
   } catch (error) {
-    console.error('Domain worker error:', error);
-    return { success: false, error: error.message };
+    console.error(`❌ Domain worker error for lead ${leadId}:`, error);
+    throw error;
   }
 };
