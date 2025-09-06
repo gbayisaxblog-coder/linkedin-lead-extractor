@@ -19,7 +19,7 @@ class BrightDataService {
         url: `https://www.google.com/search?q=${encodeURIComponent(searchQuery)}`,
         zone: 'domain_finder',
         country: 'US',
-        format: 'json'
+        format: 'html' // Use HTML to get actual page content, not JSON
       }, {
         headers: {
           'Authorization': `Bearer ${this.apiKey}`,
@@ -31,7 +31,9 @@ class BrightDataService {
       console.log(`📊 Bright Data domain response status: ${response.status}`);
       
       if (response.data) {
-        const domain = this.extractDomainFromSearchResults(response.data, companyName);
+        console.log(`📄 Received search results HTML (${response.data.length} chars)`);
+        
+        const domain = this.extractDomainFromHTML(response.data, companyName);
         
         if (domain) {
           console.log(`✅ REAL domain found for ${companyName}: ${domain}`);
@@ -58,7 +60,7 @@ class BrightDataService {
   async findCEO(domain, companyName) {
     console.log(`👔 Finding CEO for ${companyName} (${domain})`);
     
-    // Use single search query like your Python script
+    // Use the EXACT format from your Python script: "CEO of company domain"
     const query = `CEO of ${companyName} ${domain}`;
     
     try {
@@ -68,7 +70,7 @@ class BrightDataService {
         url: `https://www.google.com/search?q=${encodeURIComponent(query)}`,
         zone: 'domain_finder',
         country: 'US',
-        format: 'json'
+        format: 'html' // Use HTML to get actual page content with AI snippets
       }, {
         headers: {
           'Authorization': `Bearer ${this.apiKey}`,
@@ -80,13 +82,16 @@ class BrightDataService {
       console.log(`📊 Bright Data CEO response status: ${response.status}`);
       
       if (response.data) {
-        const searchText = this.extractTextFromSearchResults(response.data);
+        console.log(`📄 Received CEO search HTML (${response.data.length} chars)`);
+        
+        // Extract visible text from HTML (like your Python script does)
+        const searchText = this.extractVisibleTextFromHTML(response.data);
         
         if (searchText && searchText.length > 400) {
-          console.log(`✅ CEO search results found for ${companyName} (${searchText.length} chars)`);
-          return searchText;
+          console.log(`✅ CEO search results found for ${companyName} (${searchText.length} chars visible text)`);
+          return searchText.substring(0, 2000); // Limit for OpenAI
         } else {
-          console.log(`❌ Insufficient CEO search results for ${companyName}`);
+          console.log(`❌ Insufficient CEO search results for ${companyName} (${searchText?.length || 0} chars)`);
         }
       } else {
         console.log(`❌ No CEO search results returned for ${companyName}`);
@@ -103,48 +108,76 @@ class BrightDataService {
     return '';
   }
 
-  extractDomainFromSearchResults(data, companyName) {
+  extractDomainFromHTML(html, companyName) {
     try {
-      console.log(`🔍 Analyzing search results for ${companyName}...`);
+      console.log(`🔍 Extracting domains from HTML for ${companyName}...`);
       
-      // Convert search results to text and look for domains
-      const resultsText = JSON.stringify(data).toLowerCase();
-      const domainMatches = resultsText.match(/(?:https?:\/\/)?(?:www\.)?([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/g);
+      // Look for actual website links in the HTML content
+      const linkMatches = html.match(/<a[^>]+href=["']([^"']+)["'][^>]*>/gi) || [];
       
-      if (!domainMatches) {
-        console.log(`❌ No domain patterns found in search results`);
-        return null;
-      }
-      
-      console.log(`📊 Found ${domainMatches.length} potential domains in search results`);
+      console.log(`📊 Found ${linkMatches.length} links in search results`);
       
       const companyWords = companyName.toLowerCase().split(' ').filter(w => w.length > 2);
       console.log(`🔍 Looking for domains containing: ${companyWords.join(', ')}`);
       
-      for (const match of domainMatches) {
+      for (const link of linkMatches) {
+        const urlMatch = link.match(/href=["']([^"']+)["']/i);
+        if (!urlMatch) continue;
+        
+        const url = urlMatch[1];
+        
+        try {
+          const urlObj = new URL(url.startsWith('http') ? url : `https://${url}`);
+          let domain = urlObj.hostname.replace(/^www\./, '');
+          
+          // Filter out common non-company domains
+          const excludeDomains = [
+            'linkedin.com', 'facebook.com', 'twitter.com', 'youtube.com', 'google.com',
+            'instagram.com', 'indeed.com', 'glassdoor.com', 'crunchbase.com',
+            'wikipedia.org', 'bloomberg.com', 'gstatic.com', 'googleadservices.com'
+          ];
+          
+          if (excludeDomains.some(excluded => domain.includes(excluded))) {
+            continue;
+          }
+          
+          // Check if domain is relevant to company
+          const domainText = domain.toLowerCase();
+          const relevantWords = companyWords.filter(word => domainText.includes(word));
+          
+          if (relevantWords.length > 0) {
+            console.log(`🎯 Found relevant domain: ${domain} (matches: ${relevantWords.join(', ')})`);
+            return domain;
+          }
+          
+        } catch (urlError) {
+          // Skip invalid URLs
+          continue;
+        }
+      }
+      
+      // Fallback: Look for any domain patterns in the text
+      const textDomains = html.match(/(?:https?:\/\/)?(?:www\.)?([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/g) || [];
+      
+      for (const match of textDomains) {
         const domain = match.replace(/^https?:\/\//, '').replace(/^www\./, '');
         const domainText = domain.toLowerCase();
         
-        // Filter out common non-company domains
         const excludeDomains = [
           'linkedin.com', 'facebook.com', 'twitter.com', 'youtube.com', 'google.com',
           'instagram.com', 'indeed.com', 'glassdoor.com', 'crunchbase.com',
-          'wikipedia.org', 'bloomberg.com'
+          'wikipedia.org', 'bloomberg.com', 'gstatic.com', 'googleadservices.com'
         ];
         
         if (excludeDomains.some(excluded => domainText.includes(excluded))) {
-          console.log(`⏭️ Skipping excluded domain: ${domain}`);
           continue;
         }
         
-        // Check if domain is relevant to company
         const relevantWords = companyWords.filter(word => domainText.includes(word));
         
         if (relevantWords.length > 0) {
-          console.log(`🎯 Found relevant domain: ${domain} (matches: ${relevantWords.join(', ')})`);
+          console.log(`🎯 Found relevant domain in text: ${domain} (matches: ${relevantWords.join(', ')})`);
           return domain;
-        } else {
-          console.log(`⏭️ Domain not relevant: ${domain} (no company word matches)`);
         }
       }
       
@@ -152,26 +185,60 @@ class BrightDataService {
       return null;
       
     } catch (error) {
-      console.error('Error extracting domain from results:', error);
+      console.error('Error extracting domain from HTML:', error);
       return null;
+    }
+  }
+
+  extractVisibleTextFromHTML(html) {
+    try {
+      // Remove HTML tags and extract visible text (like your Python script does with driver.text)
+      let visibleText = html
+        .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '') // Remove script tags
+        .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '') // Remove style tags
+        .replace(/<[^>]+>/g, ' ') // Remove all HTML tags
+        .replace(/\s+/g, ' ') // Normalize whitespace
+        .trim();
+      
+      // Extract the main content area (usually contains search results and AI snippets)
+      const contentIndicators = [
+        'search results',
+        'about',
+        'results',
+        'ceo',
+        'chief executive',
+        'president',
+        'founder'
+      ];
+      
+      // Look for sections that likely contain the information we need
+      const sentences = visibleText.split('.').filter(sentence => {
+        const lowerSentence = sentence.toLowerCase();
+        return contentIndicators.some(indicator => lowerSentence.includes(indicator));
+      });
+      
+      if (sentences.length > 0) {
+        visibleText = sentences.join('. ');
+      }
+      
+      return visibleText;
+      
+    } catch (error) {
+      console.error('Error extracting visible text from HTML:', error);
+      return '';
     }
   }
 
   extractTextFromSearchResults(data) {
     try {
-      // Extract text content from search results for OpenAI processing
-      let searchText = '';
-      
-      if (typeof data === 'object') {
-        searchText = JSON.stringify(data);
+      // Handle both HTML and JSON responses
+      if (typeof data === 'string') {
+        // HTML response - extract visible text
+        return this.extractVisibleTextFromHTML(data);
       } else {
-        searchText = String(data);
+        // JSON response - convert to text
+        return JSON.stringify(data).substring(0, 2000);
       }
-      
-      // Limit size for OpenAI (like your Python script)
-      searchText = searchText.substring(0, 2000);
-      
-      return searchText;
     } catch (error) {
       console.error('Error extracting text from search results:', error);
       return '';
