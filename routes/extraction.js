@@ -334,4 +334,69 @@ router.get('/status/:fileId', async (req, res) => {
   }
 });
 
+// Add this route to your existing routes/extraction.js file
+router.post('/check-duplicates', async (req, res) => {
+  try {
+    const { leads } = req.body;
+    
+    if (!leads || !Array.isArray(leads)) {
+      return res.status(400).json({ error: 'Invalid leads data' });
+    }
+    
+    console.log(`🔍 Checking ${leads.length} leads for duplicates...`);
+    
+    // Build a query to check for existing leads
+    const duplicateChecks = leads.map(lead => {
+      const firstName = lead.firstName?.toLowerCase().trim();
+      const lastName = lead.lastName?.toLowerCase().trim() || 'unknown';
+      const company = lead.company?.toLowerCase().trim();
+      
+      return `(LOWER(first_name) = '${firstName}' AND LOWER(last_name) = '${lastName}' AND LOWER(company) = '${company}')`;
+    });
+    
+    const query = `
+      SELECT DISTINCT LOWER(first_name) as first_name, LOWER(last_name) as last_name, LOWER(company) as company
+      FROM leads 
+      WHERE ${duplicateChecks.join(' OR ')}
+    `;
+    
+    const { data: existingLeads, error } = await supabase.rpc('execute_sql', { 
+      sql: query 
+    });
+    
+    if (error) {
+      console.error('❌ Duplicate check query error:', error);
+      // Return all false if query fails
+      return res.json({ duplicates: leads.map(() => false) });
+    }
+    
+    // Create a set of existing lead combinations
+    const existingSet = new Set(
+      existingLeads.map(lead => 
+        `${lead.first_name} ${lead.last_name} ${lead.company}`
+      )
+    );
+    
+    // Check each lead against existing set
+    const duplicateResults = leads.map(lead => {
+      const firstName = lead.firstName?.toLowerCase().trim();
+      const lastName = lead.lastName?.toLowerCase().trim() || 'unknown';
+      const company = lead.company?.toLowerCase().trim();
+      const combination = `${firstName} ${lastName} ${company}`;
+      
+      return existingSet.has(combination);
+    });
+    
+    const duplicateCount = duplicateResults.filter(d => d).length;
+    console.log(`✅ Duplicate check complete: ${duplicateCount} duplicates found out of ${leads.length}`);
+    
+    res.json({ duplicates: duplicateResults });
+    
+  } catch (error) {
+    console.error('❌ Duplicate check error:', error);
+    // Return all false if anything fails
+    res.json({ duplicates: req.body.leads?.map(() => false) || [] });
+  }
+});
+
 module.exports = router;

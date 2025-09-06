@@ -19,8 +19,6 @@ function setupEventListeners() {
   if (extractBtn) {
     extractBtn.addEventListener('click', extractLinkedInData);
     console.log('✅ Extract button listener added');
-  } else {
-    console.error('❌ Extract button not found!');
   }
   
   if (fileSelect) fileSelect.addEventListener('change', onFileSelect);
@@ -30,10 +28,24 @@ function setupEventListeners() {
 
 async function loadFiles() {
   try {
-    const response = await fetch(`${API_BASE_URL}/files`);
-    if (!response.ok) throw new Error(`Failed to load files: ${response.status}`);
+    console.log('📂 Loading files via background script...');
     
-    files = await response.json();
+    const response = await new Promise((resolve, reject) => {
+      chrome.runtime.sendMessage({ action: 'loadFiles' }, (response) => {
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message));
+        } else {
+          resolve(response);
+        }
+      });
+    });
+    
+    if (!response || !response.success) {
+      throw new Error(response?.error || 'Failed to load files');
+    }
+    
+    files = response.files;
+    console.log('📂 Files loaded:', files);
     
     const fileSelect = document.getElementById('fileSelect');
     if (fileSelect) {
@@ -64,7 +76,7 @@ async function onFileSelect() {
     if (currentFileSpan) currentFileSpan.textContent = file.name;
     if (extractBtn) extractBtn.disabled = false;
     
-    console.log(`✅ File selected: ${file.name}`);
+    console.log(`✅ File selected: ${file.name} (ID: ${fileId})`);
     await updateFileStats(fileId);
   } else {
     currentFileId = null;
@@ -89,18 +101,26 @@ async function createNewFile() {
   }
   
   try {
-    const response = await fetch(`${API_BASE_URL}/files`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: fileName })
+    const uniqueFileName = `${fileName}_${Date.now()}`;
+    
+    const response = await new Promise((resolve, reject) => {
+      chrome.runtime.sendMessage({ 
+        action: 'createFile', 
+        fileName: uniqueFileName 
+      }, (response) => {
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message));
+        } else {
+          resolve(response);
+        }
+      });
     });
     
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`Failed to create file: ${errorText}`);
+    if (!response || !response.success) {
+      throw new Error(response?.error || 'Failed to create file');
     }
     
-    const newFile = await response.json();
+    const newFile = response.file;
     files.unshift(newFile);
     
     const fileSelect = document.getElementById('fileSelect');
@@ -115,7 +135,7 @@ async function createNewFile() {
     await onFileSelect();
     
     if (newFileNameInput) newFileNameInput.value = '';
-    showSuccess(`File "${fileName}" created successfully!`);
+    showSuccess(`File "${uniqueFileName}" created successfully!`);
   } catch (error) {
     console.error('❌ Create file error:', error);
     showError('Failed to create file: ' + error.message);
@@ -123,7 +143,7 @@ async function createNewFile() {
 }
 
 async function extractLinkedInData() {
-  console.log('🚀 EXTRACT BUTTON CLICKED - FUNCTION CALLED');
+  console.log('🚀 EXTRACT BUTTON CLICKED - STARTING EXTRACTION');
   
   if (!currentFileId) {
     console.error('❌ No file selected');
@@ -134,6 +154,7 @@ async function extractLinkedInData() {
   try {
     const pageSelect = document.getElementById('pageSelect');
     const maxPages = parseInt(pageSelect?.value) || 1;
+    console.log(`📊 Extracting ${maxPages} pages`);
     
     const extractBtn = document.getElementById('extractBtn');
     if (extractBtn) {
@@ -142,13 +163,33 @@ async function extractLinkedInData() {
     }
     
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    console.log('🌐 Current tab:', tab.url);
     
     if (!tab.url.includes('linkedin.com')) {
-      throw new Error('Please navigate to a LinkedIn search results page first');
+      throw new Error('Please navigate to LinkedIn Sales Navigator first');
     }
     
-    console.log('📋 Extracting from LinkedIn...');
-    showSuccess('Extracting from LinkedIn...');
+    console.log('📋 Step 1: Testing API connection...');
+    showSuccess('Step 1: Testing API connection...');
+    
+    // Test API connection via background script
+    const testResponse = await new Promise((resolve, reject) => {
+      chrome.runtime.sendMessage({ action: 'loadFiles' }, (response) => {
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message));
+        } else {
+          resolve(response);
+        }
+      });
+    });
+    
+    if (!testResponse || !testResponse.success) {
+      throw new Error('Cannot connect to backend API');
+    }
+    console.log('✅ API connection OK');
+    
+    console.log('📋 Step 2: Injecting content script...');
+    showSuccess('Step 2: Extracting from LinkedIn...');
     
     // Inject content script
     try {
@@ -156,18 +197,20 @@ async function extractLinkedInData() {
         target: { tabId: tab.id },
         files: ['content.js']
       });
+      console.log('✅ Content script injected');
     } catch (e) {
-      console.log('Content script injection:', e);
+      console.log('Content script injection (may already exist):', e);
     }
     
     await new Promise(resolve => setTimeout(resolve, 2000));
     
-    console.log('📨 Sending message to content script...');
+    console.log('📨 Step 3: Communicating with content script...');
+    showSuccess('Step 3: Extracting leads from LinkedIn page...');
     
     const results = await new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
-        reject(new Error('Content script timeout'));
-      }, 180000);
+        reject(new Error('Content script timeout - extraction took too long'));
+      }, 300000); // 5 minutes
       
       chrome.tabs.sendMessage(tab.id, { 
         action: 'extractLeads',
@@ -176,31 +219,44 @@ async function extractLinkedInData() {
       }, (response) => {
         clearTimeout(timeout);
         
-        console.log('📨 POPUP RECEIVED RESPONSE:', response);
+        console.log('📨 RAW RESPONSE FROM CONTENT SCRIPT:', response);
         
         if (chrome.runtime.lastError) {
-          reject(new Error(chrome.runtime.lastError.message));
+          console.error('❌ Chrome runtime error:', chrome.runtime.lastError);
+          reject(new Error(`Communication error: ${chrome.runtime.lastError.message}`));
           return;
         }
         
-        if (response && response.success) {
+        if (!response) {
+          reject(new Error('No response from content script'));
+          return;
+        }
+        
+        if (response.success === false) {
+          reject(new Error(response.error || 'Content script reported failure'));
+          return;
+        }
+        
+        if (response.success === true) {
+          console.log('✅ Content script success!');
+          console.log('📊 Leads received:', response.leadsCount || 0);
           resolve(response);
         } else {
-          reject(new Error(response?.error || 'Extraction failed'));
+          reject(new Error('Invalid response format from content script'));
         }
       });
     });
     
-    console.log(`✅ Got ${results.leads?.length || 0} leads from content script`);
+    console.log(`✅ Content script returned: ${results.leadsCount || results.leads?.length || 0} leads`);
+    console.log('📋 Sample lead:', results.leads?.[0]);
     
     if (!results.leads || results.leads.length === 0) {
-      showSuccess('No new leads found!');
+      showSuccess('No new leads found on this page!');
       return;
     }
     
-    // Send to backend
-    console.log(`📤 Sending ${results.leads.length} leads to backend...`);
-    showSuccess(`Sending ${results.leads.length} leads to database...`);
+    console.log('📋 Step 4: Sending to database via background script...');
+    showSuccess(`Step 4: Sending ${results.leads.length} leads to database...`);
     
     const fileSelect = document.getElementById('fileSelect');
     const fileName = fileSelect?.options[fileSelect.selectedIndex]?.text || 'Unknown';
@@ -212,39 +268,101 @@ async function extractLinkedInData() {
       userId: 'chrome_extension_user'
     };
     
-    console.log('📦 Sending payload:', {
+    console.log('📦 DATABASE REQUEST PAYLOAD:', {
       leadsCount: requestPayload.leads.length,
       fileId: requestPayload.fileId,
-      fileName: requestPayload.fileName
+      fileName: requestPayload.fileName,
+      sampleLead: requestPayload.leads[0]
     });
     
-    const response = await fetch(`${API_BASE_URL}/extraction/extract`, {
-      method: 'POST',
-      headers: { 
-        'Content-Type': 'application/json',
-        'Accept': 'application/json'
-      },
-      body: JSON.stringify(requestPayload)
+    const dbResponse = await new Promise((resolve, reject) => {
+      chrome.runtime.sendMessage({ 
+        action: 'sendToDatabase', 
+        payload: requestPayload 
+      }, (response) => {
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message));
+        } else {
+          resolve(response);
+        }
+      });
     });
     
-    console.log(`📡 Backend response: ${response.status}`);
+    console.log('📡 Database response from background:', dbResponse);
     
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`Backend error: ${errorText}`);
+    if (!dbResponse || !dbResponse.success) {
+      throw new Error(dbResponse?.error || 'Database request failed');
     }
     
-    const result = await response.json();
-    console.log('✅ Backend success:', result);
+    console.log('✅ Database success via background script:', dbResponse.result);
     
-    showSuccess(`✅ ${result.insertedCount} leads saved to database!`);
+    console.log('📋 Step 5: Verifying database save...');
+    showSuccess('Step 5: Verifying database save...');
     
-    // Start polling for updates
-    startPolling();
+    // Wait a moment for database to process
+    await new Promise(resolve => setTimeout(resolve, 3000));
+    
+    // Verify the data was actually saved
+    let verificationAttempts = 0;
+    const maxVerificationAttempts = 5;
+    let verified = false;
+    
+    while (!verified && verificationAttempts < maxVerificationAttempts) {
+      verificationAttempts++;
+      console.log(`🔍 Verification attempt ${verificationAttempts}/${maxVerificationAttempts}`);
+      
+      try {
+        const statsResponse = await new Promise((resolve, reject) => {
+          chrome.runtime.sendMessage({ 
+            action: 'getFileStats', 
+            fileId: currentFileId 
+          }, (response) => {
+            if (chrome.runtime.lastError) {
+              reject(new Error(chrome.runtime.lastError.message));
+            } else {
+              resolve(response);
+            }
+          });
+        });
+        
+        console.log('📊 Stats response:', statsResponse);
+        
+        if (statsResponse && statsResponse.success && statsResponse.stats.current_total > 0) {
+          verified = true;
+          console.log('✅ Database save VERIFIED!');
+          showSuccess(`✅ SUCCESS! ${dbResponse.result.insertedCount} leads saved and verified in database!`);
+          
+          // Update UI stats
+          await updateFileStats(currentFileId);
+          
+          // Start polling for processing updates
+          startPolling();
+          
+        } else {
+          console.log(`⏳ Verification attempt ${verificationAttempts} - waiting for database...`);
+          await new Promise(resolve => setTimeout(resolve, 2000));
+        }
+      } catch (verifyError) {
+        console.error(`❌ Verification attempt ${verificationAttempts} failed:`, verifyError);
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      }
+    }
+    
+    if (!verified) {
+      console.error('❌ CRITICAL: Could not verify database save!');
+      showError('⚠️ Extraction completed but could not verify database save. Check Railway logs.');
+    }
     
   } catch (error) {
-    console.error('❌ Extraction error:', error);
-    showError(`Extraction failed: ${error.message}`);
+    console.error('❌ EXTRACTION FAILED:', error);
+    showError(`❌ EXTRACTION FAILED: ${error.message}`);
+    
+    // Detailed debugging info
+    console.log('🔍 DEBUGGING INFO:');
+    console.log('- Current file ID:', currentFileId);
+    console.log('- API Base URL:', API_BASE_URL);
+    console.log('- Error details:', error);
+    
   } finally {
     const extractBtn = document.getElementById('extractBtn');
     if (extractBtn) {
@@ -267,26 +385,27 @@ async function downloadCSV() {
       downloadBtn.textContent = '⏳ Preparing...';
     }
     
-    const response = await fetch(`${API_BASE_URL}/export/csv/${currentFileId}`);
+    const response = await new Promise((resolve, reject) => {
+      chrome.runtime.sendMessage({ 
+        action: 'downloadCSV', 
+        fileId: currentFileId 
+      }, (response) => {
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message));
+        } else {
+          resolve(response);
+        }
+      });
+    });
     
-    if (!response.ok) throw new Error('Failed to generate CSV');
-    
-    const blob = await response.blob();
-    const url = window.URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    
-    const currentFileSpan = document.getElementById('currentFile');
-    a.download = `${currentFileSpan?.textContent || 'export'}.csv`;
-    
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    window.URL.revokeObjectURL(url);
+    if (!response || !response.success) {
+      throw new Error(response?.error || 'Download failed');
+    }
     
     showSuccess('CSV downloaded successfully!');
     
   } catch (error) {
+    console.error('❌ Download error:', error);
     showError('Download failed: ' + error.message);
   } finally {
     const downloadBtn = document.getElementById('downloadBtn');
@@ -297,25 +416,60 @@ async function downloadCSV() {
   }
 }
 
+async function updateFileStats(fileId) {
+  try {
+    const response = await new Promise((resolve, reject) => {
+      chrome.runtime.sendMessage({ 
+        action: 'getFileStats', 
+        fileId: fileId 
+      }, (response) => {
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message));
+        } else {
+          resolve(response);
+        }
+      });
+    });
+    
+    if (response && response.success) {
+      const stats = response.stats;
+      console.log('📊 Updated stats:', stats);
+      const totalLeadsSpan = document.getElementById('totalLeads');
+      const completedLeadsSpan = document.getElementById('completedLeads');
+      const ceoLeadsSpan = document.getElementById('ceoLeads');
+      const downloadBtn = document.getElementById('downloadBtn');
+      
+      if (totalLeadsSpan) totalLeadsSpan.textContent = stats.current_total || 0;
+      if (completedLeadsSpan) completedLeadsSpan.textContent = stats.completed || 0;
+      if (ceoLeadsSpan) ceoLeadsSpan.textContent = stats.with_ceo || 0;
+      if (downloadBtn) downloadBtn.disabled = (stats.current_total || 0) === 0;
+    }
+  } catch (error) {
+    console.error('Failed to update stats:', error);
+  }
+}
+
 function showError(message) {
+  console.error('🚨 ERROR MESSAGE:', message);
   const messagesDiv = document.getElementById('messages');
   if (messagesDiv) {
     const div = document.createElement('div');
     div.className = 'error';
     div.textContent = message;
     messagesDiv.appendChild(div);
-    setTimeout(() => div.remove(), 10000);
+    setTimeout(() => div.remove(), 15000);
   }
 }
 
 function showSuccess(message) {
+  console.log('✅ SUCCESS MESSAGE:', message);
   const messagesDiv = document.getElementById('messages');
   if (messagesDiv) {
     const div = document.createElement('div');
     div.className = 'success';
     div.textContent = message;
     messagesDiv.appendChild(div);
-    setTimeout(() => div.remove(), 8000);
+    setTimeout(() => div.remove(), 10000);
   }
 }
 
@@ -329,40 +483,12 @@ function clearStats() {
   if (ceoLeadsSpan) ceoLeadsSpan.textContent = '0';
 }
 
-async function updateFileStats(fileId) {
-  try {
-    const stats = await getFileStats(fileId);
-    if (stats) {
-      const totalLeadsSpan = document.getElementById('totalLeads');
-      const completedLeadsSpan = document.getElementById('completedLeads');
-      const ceoLeadsSpan = document.getElementById('ceoLeads');
-      const downloadBtn = document.getElementById('downloadBtn');
-      
-      if (totalLeadsSpan) totalLeadsSpan.textContent = stats.current_total || 0;
-      if (completedLeadsSpan) completedLeadsSpan.textContent = stats.completed || 0;
-      if (ceoLeadsSpan) ceoLeadsSpan.textContent = stats.with_ceo || 0;
-      if (downloadBtn) downloadBtn.disabled = stats.completed === 0;
-    }
-  } catch (error) {
-    console.error('Failed to update stats:', error);
-  }
-}
-
-async function getFileStats(fileId) {
-  try {
-    const response = await fetch(`${API_BASE_URL}/extraction/status/${fileId}`);
-    if (!response.ok) return null;
-    return await response.json();
-  } catch (error) {
-    return null;
-  }
-}
-
 let pollingInterval = null;
 
 function startPolling() {
   if (pollingInterval) clearInterval(pollingInterval);
   
+  console.log('🔄 Starting stats polling...');
   pollingInterval = setInterval(async () => {
     if (currentFileId) {
       await updateFileStats(currentFileId);

@@ -26,6 +26,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         sendResponse({ 
           success: true, 
           leads: result.leads,
+          leadsCount: result.leads.length,
           pagesProcessed: result.pagesProcessed
         });
         
@@ -36,7 +37,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         
         sendResponse({ 
           success: false, 
-          error: error.message 
+          error: error.message,
+          leads: [],
+          leadsCount: 0
         });
       }
     })();
@@ -252,7 +255,7 @@ async function checkBatchDuplicates(leads, apiBaseUrl) {
   try {
     console.log(`🔍 Checking ${leads.length} leads for duplicates...`);
     
-    const response = await fetch(`${apiBaseUrl}/extraction/check-batch-duplicates`, {
+    const response = await fetch(`${apiBaseUrl}/extraction/check-duplicates`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ leads })
@@ -264,7 +267,7 @@ async function checkBatchDuplicates(leads, apiBaseUrl) {
     }
     
     const result = await response.json();
-    console.log(`✅ Duplicate check complete: ${result.duplicates.filter(d => d).length} duplicates found`);
+    console.log(`✅ Duplicate check complete: ${result.duplicates?.length || 0} duplicates found out of ${leads.length}`);
     
     return result.duplicates || leads.map(() => false);
   } catch (error) {
@@ -488,7 +491,7 @@ async function waitForNewPageLoad() {
       
       if (hasProfiles && documentReady) {
         clearInterval(checkInterval);
-        console.log(`✅ New page loaded with ${hasProfiles} profiles`);
+        console.log(`✅ New page loaded with profiles`);
         resolve(true);
         return;
       }
