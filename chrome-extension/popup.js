@@ -1,5 +1,5 @@
 // IMPORTANT: UPDATE THIS URL AFTER DEPLOYING TO RAILWAY
-const API_BASE_URL = 'http://localhost:3000/api';
+const API_BASE_URL = 'https://linkedin-lead-extractor-production.up.railway.app/api';
 
 let currentFileId = null;
 let files = [];
@@ -111,18 +111,64 @@ async function extractLinkedInData() {
   }
   
   try {
+    const pageSelect = document.getElementById('pageSelect');
+    const maxPages = parseInt(pageSelect.value) || 1;
+    
     extractBtn.disabled = true;
-    extractBtn.textContent = '⏳ Extracting...';
+    extractBtn.textContent = `⏳ Extracting ${maxPages} pages...`;
     
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     
-    const results = await chrome.tabs.sendMessage(tab.id, { 
-      action: 'extractLeads' 
+    // Check if we're on a LinkedIn page
+    if (!tab.url.includes('linkedin.com')) {
+      throw new Error('Please navigate to a LinkedIn search results page first');
+    }
+    
+    showSuccess(`Starting extraction of ${maxPages} pages...`);
+    
+    // Inject content script if needed
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        files: ['content.js']
+      });
+    } catch (e) {
+      console.log('Content script already injected or injection failed:', e);
+    }
+    
+    // Wait a moment for script to load
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    
+    // Try to send message with timeout
+    const results = await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error('Extraction timeout - make sure you\'re on a LinkedIn search results page'));
+      }, 60000); // 60 second timeout
+      
+      chrome.tabs.sendMessage(tab.id, { 
+        action: 'extractLeads',
+        maxPages: maxPages
+      }, (response) => {
+        clearTimeout(timeout);
+        
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message));
+          return;
+        }
+        
+        if (response && response.success) {
+          resolve(response);
+        } else {
+          reject(new Error(response?.error || 'Unknown extraction error'));
+        }
+      });
     });
     
-    if (!results || !results.leads || results.leads.length === 0) {
-      throw new Error('No leads found on this page. Make sure you\'re on a LinkedIn search results page.');
+    if (!results.leads || results.leads.length === 0) {
+      throw new Error('No leads found. Make sure you\'re on a LinkedIn search results page with visible profiles.');
     }
+    
+    console.log('Extracted leads:', results.leads);
     
     const response = await fetch(`${API_BASE_URL}/extraction/extract`, {
       method: 'POST',
@@ -135,14 +181,18 @@ async function extractLinkedInData() {
       })
     });
     
-    if (!response.ok) throw new Error('Failed to process leads');
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Server error: ${errorText}`);
+    }
     
     const result = await response.json();
-    showSuccess(`Successfully extracted ${result.insertedCount} leads! Processing started...`);
+    showSuccess(`Successfully extracted ${result.insertedCount} leads from ${results.pagesProcessed || 1} pages! Processing started...`);
     
     startPolling();
     
   } catch (error) {
+    console.error('Extraction error:', error);
     showError('Extraction failed: ' + error.message);
   } finally {
     extractBtn.disabled = false;

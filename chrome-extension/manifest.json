@@ -6,7 +6,8 @@
   "permissions": [
     "activeTab",
     "storage",
-    "downloads"
+    "downloads",
+    "scripting"
   ],
   "host_permissions": [
     "https://www.linkedin.com/*",
@@ -21,11 +22,19 @@
         "https://www.linkedin.com/*",
         "https://sales.linkedin.com/*"
       ],
-      "js": ["content.js"]
+      "js": ["content.js"],
+      "run_at": "document_end",
+      "all_frames": false
     }
   ],
   "action": {
     "default_popup": "popup.html",
     "default_title": "LinkedIn Lead Extractor"
-  }
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["*.js", "*.html"],
+      "matches": ["https://www.linkedin.com/*", "https://sales.linkedin.com/*"]
+    }
+  ]
 }
