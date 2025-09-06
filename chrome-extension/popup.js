@@ -32,12 +32,10 @@ function setupEventListeners() {
 
 async function loadFiles() {
   try {
-    console.log('🔄 Loading files from API...');
     const response = await fetch(`${API_BASE_URL}/files`);
     if (!response.ok) throw new Error(`Failed to load files: ${response.status}`);
     
     files = await response.json();
-    console.log('✅ Files loaded:', files.length);
     
     fileSelect.innerHTML = '<option value="">-- Select File --</option>';
     files.forEach(file => {
@@ -80,7 +78,6 @@ async function createNewFile() {
   }
   
   try {
-    console.log(`🔄 Creating file: ${fileName}`);
     const response = await fetch(`${API_BASE_URL}/files`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -93,8 +90,6 @@ async function createNewFile() {
     }
     
     const newFile = await response.json();
-    console.log('✅ File created:', newFile);
-    
     files.unshift(newFile);
     
     const option = document.createElement('option');
@@ -119,7 +114,7 @@ async function extractLinkedInData() {
     return;
   }
   
-  console.log('=== STARTING POPUP EXTRACTION ===');
+  console.log('=== STARTING BULLETPROOF EXTRACTION ===');
   console.log('Current file ID:', currentFileId);
   console.log('API Base URL:', API_BASE_URL);
   
@@ -131,7 +126,6 @@ async function extractLinkedInData() {
     extractBtn.textContent = `⏳ Extracting ${maxPages} pages...`;
     
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    console.log('Current tab URL:', tab.url);
     
     if (!tab.url.includes('linkedin.com')) {
       throw new Error('Please navigate to a LinkedIn search results page first');
@@ -141,39 +135,37 @@ async function extractLinkedInData() {
     console.log('🔗 Step 1: Testing API connection...');
     showSuccess('Step 1: Testing API connection...');
     
-    const healthUrl = `${API_BASE_URL.replace('/api', '')}/health`;
-    const healthResponse = await fetch(healthUrl);
-    
+    const healthResponse = await fetch(`${API_BASE_URL.replace('/api', '')}/health`);
     if (!healthResponse.ok) {
       throw new Error(`API not reachable (${healthResponse.status})`);
     }
+    console.log('✅ API connection successful');
     
-    const healthData = await healthResponse.json();
-    console.log('✅ API connection successful:', healthData);
+    // STEP 2: Get Initial Database Count
+    console.log('📊 Step 2: Getting initial database count...');
+    const initialStats = await getFileStats(currentFileId);
+    const initialCount = initialStats?.current_total || 0;
+    console.log(`📊 Initial lead count in database: ${initialCount}`);
     
-    // STEP 2: Extract from LinkedIn
-    console.log('📋 Step 2: Extracting from LinkedIn...');
-    showSuccess('Step 2: Extracting from LinkedIn...');
+    // STEP 3: Extract from LinkedIn
+    console.log('📋 Step 3: Extracting from LinkedIn...');
+    showSuccess('Step 3: Extracting from LinkedIn...');
     
     try {
       await chrome.scripting.executeScript({
         target: { tabId: tab.id },
         files: ['content.js']
       });
-      console.log('✅ Content script injected');
     } catch (e) {
       console.log('Content script injection result:', e);
     }
     
     await new Promise(resolve => setTimeout(resolve, 2000));
     
-    console.log('📨 Sending message to content script...');
-    
     const results = await new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
-        console.error('❌ Timeout waiting for content script');
         reject(new Error('Content script timeout'));
-      }, 300000); // 5 minute timeout for multiple pages
+      }, 300000);
       
       chrome.tabs.sendMessage(tab.id, { 
         action: 'extractLeads',
@@ -182,44 +174,31 @@ async function extractLinkedInData() {
       }, (response) => {
         clearTimeout(timeout);
         
-        console.log('📨 POPUP RECEIVED RESPONSE FROM CONTENT SCRIPT:');
-        console.log('- Response:', response);
-        console.log('- Success:', response?.success);
-        console.log('- Leads count:', response?.leads?.length);
-        console.log('- Pages processed:', response?.pagesProcessed);
+        console.log('📨 Content script response received');
         
         if (chrome.runtime.lastError) {
-          console.error('❌ Chrome runtime error:', chrome.runtime.lastError);
           reject(new Error(chrome.runtime.lastError.message));
           return;
         }
         
-        if (!response) {
-          console.error('❌ No response from content script');
-          reject(new Error('No response from content script'));
-          return;
-        }
-        
-        if (response.success) {
-          console.log('✅ Content script extraction successful');
+        if (response && response.success) {
           resolve(response);
         } else {
-          console.error('❌ Content script error:', response.error);
-          reject(new Error(response.error));
+          reject(new Error(response?.error || 'LinkedIn extraction failed'));
         }
       });
     });
     
-    console.log('✅ LinkedIn extraction completed successfully');
+    console.log(`✅ LinkedIn extraction successful: ${results.leads?.length || 0} leads`);
     
     if (!results.leads || results.leads.length === 0) {
       showSuccess('No new leads found - all profiles already in database!');
       return;
     }
     
-    // STEP 3: Send to Database
-    console.log(`📤 Step 3: Sending ${results.leads.length} leads to backend database...`);
-    showSuccess(`Step 3: Sending ${results.leads.length} leads to database...`);
+    // STEP 4: Send to Database with Verification
+    console.log(`📤 Step 4: Sending ${results.leads.length} leads to database...`);
+    showSuccess(`Step 4: Sending ${results.leads.length} leads to database...`);
     
     const requestPayload = {
       leads: results.leads,
@@ -228,15 +207,9 @@ async function extractLinkedInData() {
       userId: 'chrome_extension_user'
     };
     
-    console.log('📦 REQUEST PAYLOAD:');
-    console.log('- Leads count:', requestPayload.leads.length);
-    console.log('- File ID:', requestPayload.fileId);
-    console.log('- Sample lead:', requestPayload.leads[0]);
+    console.log(`📦 Payload: ${requestPayload.leads.length} leads for file ${requestPayload.fileId}`);
     
-    const extractUrl = `${API_BASE_URL}/extraction/extract`;
-    console.log('📡 Sending POST to:', extractUrl);
-    
-    const response = await fetch(extractUrl, {
+    const response = await fetch(`${API_BASE_URL}/extraction/extract`, {
       method: 'POST',
       headers: { 
         'Content-Type': 'application/json',
@@ -254,26 +227,74 @@ async function extractLinkedInData() {
     }
     
     const result = await response.json();
-    console.log('✅ BACKEND RESPONSE SUCCESS:', result);
+    console.log('✅ Backend response:', result);
     
-    // STEP 4: Verify Save
-    console.log('🔍 Step 4: Verifying database save...');
-    showSuccess('Step 4: Verifying database save...');
+    // STEP 5: VERIFY DATABASE SAVE (CRITICAL)
+    console.log('🔍 Step 5: VERIFYING database save...');
+    showSuccess('Step 5: Verifying database save...');
     
+    // Wait for database to update
     await new Promise(resolve => setTimeout(resolve, 3000));
     
-    const verifyResponse = await fetch(`${API_BASE_URL}/extraction/status/${currentFileId}`);
-    if (verifyResponse.ok) {
-      const stats = await verifyResponse.json();
-      console.log('✅ DATABASE VERIFICATION:', stats);
+    // Check database count multiple times to ensure consistency
+    let verificationAttempts = 0;
+    let verifiedCount = 0;
+    const maxVerificationAttempts = 5;
+    
+    while (verificationAttempts < maxVerificationAttempts) {
+      try {
+        const verifyStats = await getFileStats(currentFileId);
+        const currentCount = verifyStats?.current_total || 0;
+        const expectedCount = initialCount + result.insertedCount;
+        
+        console.log(`🔍 Verification attempt ${verificationAttempts + 1}:`);
+        console.log(`   Initial count: ${initialCount}`);
+        console.log(`   Backend reported inserted: ${result.insertedCount}`);
+        console.log(`   Expected total: ${expectedCount}`);
+        console.log(`   Actual count in database: ${currentCount}`);
+        
+        if (currentCount >= expectedCount) {
+          verifiedCount = currentCount;
+          console.log(`✅ DATABASE VERIFICATION SUCCESSFUL!`);
+          break;
+        } else {
+          console.log(`⚠️ Count mismatch - waiting and retrying...`);
+          verificationAttempts++;
+          await new Promise(resolve => setTimeout(resolve, 2000));
+        }
+        
+      } catch (verifyError) {
+        console.error(`❌ Verification attempt ${verificationAttempts + 1} failed:`, verifyError);
+        verificationAttempts++;
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      }
+    }
+    
+    // STEP 6: Report Final Results
+    if (verifiedCount > initialCount) {
+      const actualInserted = verifiedCount - initialCount;
+      showSuccess(`✅ SUCCESS! ${actualInserted} leads verified in database. Processing started...`);
+      console.log(`✅ FINAL VERIFICATION: ${actualInserted} leads successfully added to database`);
+    } else {
+      const errorMsg = `❌ DATABASE VERIFICATION FAILED! Expected ${result.insertedCount} leads but only found ${verifiedCount - initialCount} new leads in database.`;
+      console.error(errorMsg);
+      showError(errorMsg);
       
-      showSuccess(`✅ SUCCESS! ${result.insertedCount} leads saved. ${stats.current_total} total in file. Processing started...`);
+      // Additional debugging
+      console.log('🔍 DEBUGGING INFO:');
+      console.log('- Backend claimed to insert:', result.insertedCount);
+      console.log('- Database initial count:', initialCount);
+      console.log('- Database current count:', verifiedCount);
+      console.log('- Actual new leads in DB:', verifiedCount - initialCount);
+      console.log('- Missing leads:', result.insertedCount - (verifiedCount - initialCount));
+      
+      // Still start polling in case some leads made it through
     }
     
     startPolling();
     
   } catch (error) {
-    console.error('❌ COMPLETE POPUP ERROR:', error);
+    console.error('❌ COMPLETE EXTRACTION ERROR:', error);
     showError(`Extraction failed: ${error.message}`);
   } finally {
     extractBtn.disabled = false;
@@ -357,7 +378,7 @@ function showError(message) {
   div.className = 'error';
   div.textContent = message;
   messagesDiv.appendChild(div);
-  setTimeout(() => div.remove(), 8000);
+  setTimeout(() => div.remove(), 10000);
 }
 
 function showSuccess(message) {
@@ -365,7 +386,7 @@ function showSuccess(message) {
   div.className = 'success';
   div.textContent = message;
   messagesDiv.appendChild(div);
-  setTimeout(() => div.remove(), 5000);
+  setTimeout(() => div.remove(), 8000);
 }
 
 function clearStats() {
