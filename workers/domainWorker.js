@@ -15,21 +15,22 @@ module.exports = async function(job) {
     let domain = await cache.get(cacheKey);
     
     if (!domain) {
-      console.log(`🔍 Searching for domain of: ${company}`);
+      console.log(`🔍 Searching for REAL domain of: ${company}`);
       domain = await brightData.findDomain(company);
       
       if (domain) {
         await cache.set(cacheKey, domain, 604800); // Cache for 7 days
-        console.log(`✅ Found and cached domain: ${domain}`);
+        console.log(`✅ Found and cached REAL domain: ${domain}`);
       } else {
-        console.log(`❌ No domain found for: ${company}`);
+        console.log(`❌ NO REAL domain found for: ${company} - marking as failed`);
+        // NO FALLBACK - mark as failed if no real domain found
       }
     } else {
       console.log(`✅ Using cached domain: ${domain}`);
     }
     
     if (domain) {
-      // Update lead with domain
+      // Update lead with REAL domain
       const { error: updateError } = await supabase
         .from('leads')
         .update({
@@ -57,7 +58,7 @@ module.exports = async function(job) {
       
       return { success: true, domain };
     } else {
-      // Mark as failed if no domain found
+      // Mark as failed if no REAL domain found
       await supabase
         .from('leads')
         .update({
@@ -66,7 +67,8 @@ module.exports = async function(job) {
         })
         .eq('id', leadId);
       
-      return { success: false, error: 'Domain not found' };
+      console.log(`❌ Lead ${leadId} marked as failed - no real domain found`);
+      return { success: false, error: 'No real domain found' };
     }
     
   } catch (error) {
