@@ -193,4 +193,41 @@ router.get('/status/:fileId', async (req, res) => {
   }
 });
 
+// Add this route before module.exports
+router.get('/debug/queues', async (req, res) => {
+  try {
+    const { domainQueue, ceoQueue } = require('../utils/queue');
+    
+    const domainWaiting = await domainQueue.getWaiting();
+    const domainActive = await domainQueue.getActive();
+    const domainCompleted = await domainQueue.getCompleted();
+    const domainFailed = await domainQueue.getFailed();
+    
+    const ceoWaiting = await ceoQueue.getWaiting();
+    const ceoActive = await ceoQueue.getActive();
+    const ceoCompleted = await ceoQueue.getCompleted();
+    const ceoFailed = await ceoQueue.getFailed();
+    
+    res.json({
+      domain: {
+        waiting: domainWaiting.length,
+        active: domainActive.length,
+        completed: domainCompleted.length,
+        failed: domainFailed.length
+      },
+      ceo: {
+        waiting: ceoWaiting.length,
+        active: ceoActive.length,
+        completed: ceoCompleted.length,
+        failed: ceoFailed.length
+      },
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('Queue debug error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 module.exports = router;
