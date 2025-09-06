@@ -42,7 +42,7 @@ async function extractAllLeadsWithPagination(maxPages = 1, apiBaseUrl) {
       // Extract all leads from current page with FAST batch checking
       const pageResult = await extractLeadsWithFastDuplicateCheck(currentPage, apiBaseUrl, totalStats);
       
-      if (pageResult.newLeads.length === 0 && pageResult.duplicates === 0) {
+      if (pageResult.newLeads.length === 0 && pageResult.duplicates === 0 && pageResult.failed === 0) {
         console.log(`No leads found on page ${currentPage}, stopping extraction`);
         break;
       }
@@ -76,7 +76,7 @@ async function extractAllLeadsWithPagination(maxPages = 1, apiBaseUrl) {
     console.log(`🎉 EXTRACTION COMPLETE!`);
     console.log(`Total: ${totalStats.new} NEW, ${totalStats.duplicates} duplicates, ${totalStats.failed} failed`);
     
-    updatePersistentStats(pagesProcessed, maxPages, `🎉 EXTRACTION COMPLETE!`, totalStats);
+    updatePersistentStats(pagesProcessed, maxPages, `🎉 COMPLETE! ${totalStats.new} new leads found`, totalStats);
     
     // Keep stats visible for 30 seconds after completion
     setTimeout(() => {
@@ -135,26 +135,35 @@ async function extractLeadsWithFastDuplicateCheck(currentPage, apiBaseUrl, globa
         
         if (lead && lead.firstName && lead.lastName && lead.company) {
           allExtractedData.push({ lead, container, index: totalProcessed + 1 });
+          console.log(`📋 Extracted: ${lead.firstName} ${lead.lastName} - ${lead.company}`);
         } else {
           markProfileAsExtracted(container, 'failed');
           failedCount++;
+          
+          // Debug why it failed
+          const issues = [];
+          if (!lead?.firstName) issues.push('no firstName');
+          if (!lead?.lastName || lead?.lastName === 'Unknown') issues.push('no lastName');
+          if (!lead?.company) issues.push('no company');
+          console.log(`❌ Failed: ${issues.join(', ')} | Found: ${lead?.firstName || 'none'} ${lead?.lastName || 'none'} - ${lead?.company || 'none'}`);
         }
       } else {
         markProfileAsExtracted(container, 'failed');
         failedCount++;
+        console.log(`❌ No lead element found in profile ${totalProcessed + 1}`);
       }
       
       container.setAttribute('data-extractor-processed', 'true');
       totalProcessed++;
       
-      // Update stats during extraction
+      // Update stats in real-time
       const currentStats = {
         new: globalStats.new,
         duplicates: globalStats.duplicates,
         failed: globalStats.failed + failedCount,
         processed: globalStats.processed + totalProcessed
       };
-      updatePersistentStats(currentPage, 1, `Extracting... (${totalProcessed} processed)`, currentStats);
+      updatePersistentStats(currentPage, 1, `Processing profile ${totalProcessed}...`, currentStats);
     }
     
     lastProfileCount = profileContainers.length;
@@ -221,15 +230,22 @@ async function extractLeadsWithFastDuplicateCheck(currentPage, apiBaseUrl, globa
 
 async function checkBatchDuplicates(leads, apiBaseUrl) {
   try {
+    console.log(`🔍 Checking ${leads.length} leads for duplicates...`);
+    
     const response = await fetch(`${apiBaseUrl}/extraction/check-batch-duplicates`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ leads })
     });
     
-    if (!response.ok) return leads.map(() => false);
+    if (!response.ok) {
+      console.error('Batch duplicate check failed:', response.status);
+      return leads.map(() => false);
+    }
     
     const result = await response.json();
+    console.log(`✅ Duplicate check complete: ${result.duplicates.filter(d => d).length} duplicates found`);
+    
     return result.duplicates || leads.map(() => false);
   } catch (error) {
     console.error('Error checking batch duplicates:', error);
@@ -241,26 +257,38 @@ function extractLeadFromElement(element) {
   const lead = {};
   
   try {
-    // Extract name
+    // Extract name with better error handling
     const nameElement = element.querySelector('span[data-anonymize="person-name"]');
     if (nameElement) {
       const fullName = nameElement.textContent.trim();
       
-      // Clean up name
+      if (!fullName) {
+        console.log('❌ Empty name found');
+        return null;
+      }
+      
+      // Clean up name more aggressively
       const cleanName = fullName
         .replace(/,?\s*(ChFC®|CLU®|CAP®|PhD|MBA|CPA|Esq\.?|Jr\.?|Sr\.?|III|II|IV)\s*/gi, '')
         .replace(/\s+Advising.*$/gi, '')
+        .replace(/\s+Legacy.*$/gi, '')
         .trim();
       
-      const nameParts = cleanName.split(' ').filter(part => part.length > 0);
+      const nameParts = cleanName.split(' ').filter(part => part.length > 1); // Require at least 2 characters
       
       if (nameParts.length >= 2) {
         lead.firstName = nameParts[0];
         lead.lastName = nameParts.slice(1).join(' ');
-      } else if (nameParts.length === 1) {
+      } else if (nameParts.length === 1 && nameParts[0].length > 1) {
         lead.firstName = nameParts[0];
         lead.lastName = 'Unknown';
+      } else {
+        console.log(`❌ Invalid name format: "${fullName}" → "${cleanName}"`);
+        return null;
       }
+    } else {
+      console.log('❌ No name element found');
+      return null;
     }
     
     // Extract title
@@ -269,33 +297,52 @@ function extractLeadFromElement(element) {
       lead.title = titleElement.textContent.trim();
     }
     
-    // Extract company
+    // Extract company with multiple methods and better validation
     let company = '';
     
+    // Method 1: Company link
     const companyElement = element.querySelector('a[data-anonymize="company-name"]');
     if (companyElement) {
       company = companyElement.textContent.trim();
     }
     
+    // Method 2: Any link in subtitle
+    if (!company) {
+      const anyCompanyLink = element.querySelector('.artdeco-entity-lockup__subtitle a');
+      if (anyCompanyLink) {
+        company = anyCompanyLink.textContent.trim();
+      }
+    }
+    
+    // Method 3: Parse subtitle text
     if (!company) {
       const subtitleElement = element.querySelector('.artdeco-entity-lockup__subtitle');
       if (subtitleElement) {
         const text = subtitleElement.textContent;
         const parts = text.split('•').map(p => p.trim());
-        if (parts.length > 1) {
+        if (parts.length > 1 && parts[1].length > 2) {
           company = parts[1];
-        } else {
-          const anyLink = subtitleElement.querySelector('a');
-          if (anyLink) {
-            company = anyLink.textContent.trim();
-          }
         }
       }
     }
     
     if (company) {
-      company = company.replace(/^[^\w\s]+\s*/, '').replace(/\s+/g, ' ').trim();
-      lead.company = company;
+      // Clean up company name more thoroughly
+      company = company
+        .replace(/^[^\w\s]+\s*/, '') // Remove leading symbols
+        .replace(/\s+/g, ' ') // Normalize spaces
+        .replace(/\s+(Inc|LLC|Ltd|Corp|Co)\.?$/i, '') // Remove common suffixes
+        .trim();
+      
+      if (company.length > 2) { // Require at least 3 characters
+        lead.company = company;
+      } else {
+        console.log(`❌ Company name too short: "${company}"`);
+        return null;
+      }
+    } else {
+      console.log('❌ No company found');
+      return null;
     }
     
     // Extract location
@@ -310,11 +357,12 @@ function extractLeadFromElement(element) {
       lead.linkedinUrl = linkElement.href;
     }
     
+    return lead;
+    
   } catch (error) {
     console.error('Error extracting lead data:', error);
+    return null;
   }
-  
-  return lead;
 }
 
 // Updated marking function with 3 states
@@ -459,141 +507,6 @@ async function waitForNewPageLoad() {
   });
 }
 
-// FAST extraction with batch duplicate checking
-async function extractLeadsWithFastDuplicateCheck(currentPage, apiBaseUrl, globalStats) {
-  const allExtractedData = [];
-  const newLeads = [];
-  let failedCount = 0;
-  let duplicateCount = 0;
-  
-  console.log(`🚀 Starting FAST extraction for page ${currentPage}`);
-  
-  // STEP 1: FAST EXTRACTION
-  window.scrollTo(0, 0);
-  await new Promise(resolve => setTimeout(resolve, 1000));
-  
-  let lastProfileCount = 0;
-  let stableCount = 0;
-  let totalProcessed = 0;
-  
-  while (stableCount < 3) {
-    const profileContainers = document.querySelectorAll('li.artdeco-list__item');
-    
-    for (let i = lastProfileCount; i < profileContainers.length; i++) {
-      const container = profileContainers[i];
-      
-      if (container.getAttribute('data-extractor-processed')) continue;
-      
-      container.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      await new Promise(resolve => setTimeout(resolve, 200));
-      
-      const leadElement = container.querySelector('[data-x-search-result="LEAD"]');
-      
-      if (leadElement) {
-        const lead = extractLeadFromElement(leadElement);
-        
-        if (lead && lead.firstName && lead.lastName && lead.company) {
-          allExtractedData.push({ lead, container, index: totalProcessed + 1 });
-        } else {
-          markProfileAsExtracted(container, 'failed');
-          failedCount++;
-        }
-      } else {
-        markProfileAsExtracted(container, 'failed');
-        failedCount++;
-      }
-      
-      container.setAttribute('data-extractor-processed', 'true');
-      totalProcessed++;
-      
-      // Update stats in real-time
-      const currentStats = {
-        new: globalStats.new,
-        duplicates: globalStats.duplicates,
-        failed: globalStats.failed + failedCount,
-        processed: globalStats.processed + totalProcessed
-      };
-      updatePersistentStats(currentPage, 1, `Processing profile ${totalProcessed}...`, currentStats);
-    }
-    
-    lastProfileCount = profileContainers.length;
-    
-    window.scrollBy(0, window.innerHeight * 0.6);
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    
-    const newProfileContainers = document.querySelectorAll('li.artdeco-list__item');
-    
-    if (newProfileContainers.length > profileContainers.length) {
-      stableCount = 0;
-    } else {
-      stableCount++;
-    }
-    
-    const paginationVisible = document.querySelector('.artdeco-pagination')?.getBoundingClientRect();
-    if (paginationVisible && paginationVisible.top < window.innerHeight) {
-      break;
-    }
-  }
-  
-  console.log(`📋 Fast extraction complete: ${allExtractedData.length} potential leads`);
-  
-  // STEP 2: BATCH DUPLICATE CHECK
-  if (allExtractedData.length > 0) {
-    updatePersistentStats(currentPage, 1, `Page ${currentPage}: Checking ${allExtractedData.length} leads for duplicates...`, globalStats);
-    
-    const leadsToCheck = allExtractedData.map(item => ({
-      firstName: item.lead.firstName,
-      lastName: item.lead.lastName,
-      company: item.lead.company
-    }));
-    
-    const duplicateResults = await checkBatchDuplicates(leadsToCheck, apiBaseUrl);
-    
-    // STEP 3: APPLY MARKERS
-    updatePersistentStats(currentPage, 1, `Page ${currentPage}: Applying markers...`, globalStats);
-    
-    for (let i = 0; i < allExtractedData.length; i++) {
-      const { lead, container, index } = allExtractedData[i];
-      const isDuplicate = duplicateResults[i];
-      
-      if (isDuplicate) {
-        markProfileAsExtracted(container, 'duplicate');
-        duplicateCount++;
-        console.log(`🔄 ${index}: DUPLICATE - ${lead.firstName} ${lead.lastName} - ${lead.company}`);
-      } else {
-        newLeads.push(lead);
-        markProfileAsExtracted(container, 'new');
-        console.log(`✓ ${index}: NEW - ${lead.firstName} ${lead.lastName} - ${lead.company}`);
-      }
-    }
-  }
-  
-  return {
-    newLeads: newLeads,
-    duplicates: duplicateCount,
-    failed: failedCount,
-    totalProcessed: totalProcessed
-  };
-}
-
-async function checkBatchDuplicates(leads, apiBaseUrl) {
-  try {
-    const response = await fetch(`${apiBaseUrl}/extraction/check-batch-duplicates`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ leads })
-    });
-    
-    if (!response.ok) return leads.map(() => false);
-    
-    const result = await response.json();
-    return result.duplicates || leads.map(() => false);
-  } catch (error) {
-    console.error('Error checking batch duplicates:', error);
-    return leads.map(() => false);
-  }
-}
-
 // PERSISTENT stats indicator that never disappears
 function addPersistentStatsIndicator(maxPages) {
   removePersistentStats();
@@ -623,38 +536,40 @@ function addPersistentStatsIndicator(maxPages) {
       <div id="minimize-stats" style="cursor: pointer; font-size: 14px; opacity: 0.7; padding: 4px; background: rgba(255,255,255,0.1); border-radius: 4px;" title="Minimize">−</div>
     </div>
     
-    <div style="margin-bottom: 12px;">
-      <div id="progress-text" style="font-weight: 600; margin-bottom: 4px;">Preparing...</div>
-      <div style="background: rgba(255,255,255,0.3); height: 8px; border-radius: 4px;">
-        <div id="progress-bar" style="background: #90EE90; height: 100%; border-radius: 4px; width: 0%; transition: width 0.5s; box-shadow: 0 0 10px rgba(144,238,144,0.5);"></div>
-      </div>
-      <div id="progress-details" style="font-size: 11px; margin-top: 4px; opacity: 0.9;">Starting extraction...</div>
-    </div>
-    
-    <div style="border-top: 1px solid rgba(255,255,255,0.2); padding-top: 12px;">
-      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; font-size: 13px; margin-bottom: 12px;">
-        <div>
-          <div style="color: #90EE90; font-weight: bold; margin-bottom: 4px;">
-            <span style="font-size: 16px;">✓</span> <span id="new-count">NEW: 0</span>
-          </div>
-          <div style="color: #FFD700; font-weight: bold; margin-bottom: 4px;">
-            <span style="font-size: 16px;">🔄</span> <span id="duplicate-count">DUPLICATES: 0</span>
-          </div>
+    <div id="stats-content">
+      <div style="margin-bottom: 12px;">
+        <div id="progress-text" style="font-weight: 600; margin-bottom: 4px;">Preparing...</div>
+        <div style="background: rgba(255,255,255,0.3); height: 8px; border-radius: 4px;">
+          <div id="progress-bar" style="background: #90EE90; height: 100%; border-radius: 4px; width: 0%; transition: width 0.5s; box-shadow: 0 0 10px rgba(144,238,144,0.5);"></div>
         </div>
-        <div>
-          <div style="color: #FF6B6B; font-weight: bold; margin-bottom: 4px;">
-            <span style="font-size: 16px;">✗</span> <span id="failed-count">FAILED: 0</span>
-          </div>
-          <div style="color: #87CEEB; font-weight: bold; margin-bottom: 4px;">
-            <span style="font-size: 16px;">📊</span> <span id="total-processed">PROCESSED: 0</span>
-          </div>
-        </div>
+        <div id="progress-details" style="font-size: 11px; margin-top: 4px; opacity: 0.9;">Starting extraction...</div>
       </div>
       
-      <div style="border-top: 1px solid rgba(255,255,255,0.1); padding-top: 12px;">
-        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 12px;">
-          <div>⏱️ <span id="extraction-time">00:00</span></div>
-          <div>📄 Page: <span id="current-page-display">1</span>/<span id="total-pages-display">${maxPages}</span></div>
+      <div style="border-top: 1px solid rgba(255,255,255,0.2); padding-top: 12px;">
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; font-size: 13px; margin-bottom: 12px;">
+          <div>
+            <div style="color: #90EE90; font-weight: bold; margin-bottom: 4px;">
+              <span style="font-size: 16px;">✓</span> <span id="new-count">NEW: 0</span>
+            </div>
+            <div style="color: #FFD700; font-weight: bold; margin-bottom: 4px;">
+              <span style="font-size: 16px;">🔄</span> <span id="duplicate-count">DUPLICATES: 0</span>
+            </div>
+          </div>
+          <div>
+            <div style="color: #FF6B6B; font-weight: bold; margin-bottom: 4px;">
+              <span style="font-size: 16px;">✗</span> <span id="failed-count">FAILED: 0</span>
+            </div>
+            <div style="color: #87CEEB; font-weight: bold; margin-bottom: 4px;">
+              <span style="font-size: 16px;">📊</span> <span id="total-processed">PROCESSED: 0</span>
+            </div>
+          </div>
+        </div>
+        
+        <div style="border-top: 1px solid rgba(255,255,255,0.1); padding-top: 12px;">
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 12px;">
+            <div>⏱️ <span id="extraction-time">00:00</span></div>
+            <div>📄 Page: <span id="current-page-display">1</span>/<span id="total-pages-display">${maxPages}</span></div>
+          </div>
         </div>
       </div>
     </div>
@@ -664,18 +579,15 @@ function addPersistentStatsIndicator(maxPages) {
   
   // Add minimize functionality
   document.getElementById('minimize-stats').addEventListener('click', () => {
-    const content = indicator.querySelector('div:nth-child(2)');
-    const stats = indicator.querySelector('div:nth-child(3)');
+    const content = document.getElementById('stats-content');
     const minimizeBtn = document.getElementById('minimize-stats');
     
     if (content.style.display === 'none') {
       content.style.display = 'block';
-      stats.style.display = 'block';
       minimizeBtn.textContent = '−';
       minimizeBtn.title = 'Minimize';
     } else {
       content.style.display = 'none';
-      stats.style.display = 'none';
       minimizeBtn.textContent = '+';
       minimizeBtn.title = 'Expand';
     }
