@@ -1,4 +1,4 @@
-// services/brightdata.js - ULTIMATE OPENAI-POWERED DOMAIN FINDING
+// services/brightdata.js - ULTIMATE COST-OPTIMIZED VERSION
 const axios = require('axios');
 
 class BrightDataService {
@@ -20,8 +20,7 @@ class BrightDataService {
         return null;
       }
       
-      // ULTIMATE STRATEGY: Extract EVERYTHING, let OpenAI decide
-      const domain = await this.findDomainWithOpenAIIntelligence(searchResults, companyName);
+      const domain = await this.findDomainWithSmartOpenAI(searchResults, companyName);
       
       if (domain) {
         console.log(`✅ Domain found: ${companyName} → ${domain}`);
@@ -75,11 +74,11 @@ class BrightDataService {
     }
   }
 
-  async findDomainWithOpenAIIntelligence(html, companyName) {
-    console.log(`🤖 OPENAI INTELLIGENCE for: ${companyName}`);
+  async findDomainWithSmartOpenAI(html, companyName) {
+    console.log(`🤖 SMART OPENAI ANALYSIS for: ${companyName}`);
     
     try {
-      // STEP 1: Extract ALL possible domains with maximum coverage
+      // STEP 1: Extract ALL domains comprehensively
       const allDomains = this.extractEveryPossibleDomain(html);
       
       if (allDomains.length === 0) {
@@ -87,47 +86,159 @@ class BrightDataService {
         return null;
       }
       
-      console.log(`🔍 Extracted ${allDomains.length} total domains:`);
-      allDomains.slice(0, 15).forEach((d, i) => {
-        console.log(`  ${i + 1}. ${d.domain} - "${d.context.substring(0, 80)}..."`);
+      console.log(`🔍 Extracted ${allDomains.length} total domains`);
+      
+      // STEP 2: SMART PRE-FILTERING to reduce AI costs
+      const relevantDomains = this.smartPreFilter(allDomains, companyName);
+      
+      console.log(`🔍 Smart pre-filter: ${relevantDomains.length} relevant domains (from ${allDomains.length})`);
+      relevantDomains.forEach((d, i) => {
+        console.log(`  ${i + 1}. ${d.domain} - "${d.context.substring(0, 60)}..."`);
       });
       
-      // STEP 2: Filter out only the most obvious platform domains (minimal filtering)
-      const filteredDomains = allDomains.filter(item => {
-        const domain = item.domain.toLowerCase();
-        
-        // Only exclude the most obvious Google domains
-        const obviousGoogleDomains = [
-          'google.com', 'youtube.com', 'maps.google.com', 'translate.google.com',
-          'support.google.com', 'accounts.google.com'
-        ];
-        
-        const isObviousGoogle = obviousGoogleDomains.some(gDomain => domain === gDomain);
-        
-        if (isObviousGoogle) {
-          console.log(`❌ Excluded obvious Google domain: ${domain}`);
-          return false;
-        }
-        
-        return true;
-      });
-      
-      console.log(`🔍 After minimal filtering: ${filteredDomains.length} domains for OpenAI analysis`);
-      
-      if (filteredDomains.length === 0) {
-        console.log(`❌ No domains left after filtering`);
+      if (relevantDomains.length === 0) {
+        console.log(`❌ No relevant domains after smart filtering`);
         return null;
       }
       
-      // STEP 3: Let OpenAI make the intelligent decision
-      const selectedDomain = await this.useOpenAIForIntelligentDomainSelection(filteredDomains, companyName);
+      // STEP 3: If only one relevant domain, return it (no AI needed)
+      if (relevantDomains.length === 1) {
+        console.log(`✅ Only one relevant domain found: ${relevantDomains[0].domain}`);
+        return relevantDomains[0].domain;
+      }
+      
+      // STEP 4: Use OpenAI only for final selection among pre-filtered candidates
+      const selectedDomain = await this.useOpenAIForFinalSelection(relevantDomains, companyName);
       
       return selectedDomain;
       
     } catch (error) {
-      console.error('OpenAI intelligence error:', error.message);
+      console.error('Smart OpenAI analysis error:', error.message);
       return null;
     }
+  }
+
+  smartPreFilter(allDomains, companyName) {
+    const companyWords = this.normalizeCompanyName(companyName);
+    const companyLower = companyName.toLowerCase();
+    
+    console.log(`🧠 Smart pre-filtering with company words: [${companyWords.join(', ')}]`);
+    
+    // STEP 1: Remove obvious platform domains
+    const nonPlatformDomains = allDomains.filter(item => {
+      const domain = item.domain.toLowerCase();
+      
+      const platformDomains = [
+        'google.com', 'youtube.com', 'linkedin.com', 'facebook.com', 
+        'twitter.com', 'instagram.com', 'crunchbase.com', 'amazon.com',
+        'ebay.com', 'wikipedia.org', 'w3.org', 'github.com',
+        'stackoverflow.com', 'reddit.com', 'medium.com'
+      ];
+      
+      const isPlatform = platformDomains.includes(domain);
+      
+      if (isPlatform) {
+        console.log(`❌ Filtered out platform: ${domain}`);
+        return false;
+      }
+      
+      return true;
+    });
+    
+    // STEP 2: Find domains with strong company connections
+    const strongMatches = nonPlatformDomains.filter(item => {
+      const domain = item.domain.toLowerCase();
+      const context = item.context.toLowerCase();
+      
+      // Strong match criteria
+      const domainHasMainWord = companyWords[0] && companyWords[0].length >= 3 && domain.includes(companyWords[0]);
+      const domainHasAnyWord = companyWords.some(word => word.length >= 3 && domain.includes(word));
+      const contextHasCompanyName = context.includes(companyLower);
+      const contextHasMultipleWords = companyWords.filter(word => word.length >= 3 && context.includes(word)).length >= 2;
+      const isEarlyResult = item.position <= 5;
+      
+      const isStrong = domainHasMainWord || 
+                      (domainHasAnyWord && isEarlyResult) ||
+                      (contextHasCompanyName && isEarlyResult) ||
+                      contextHasMultipleWords;
+      
+      if (isStrong) {
+        console.log(`✅ Strong match: ${domain} (${domainHasMainWord ? 'main-word' : ''} ${domainHasAnyWord ? 'any-word' : ''} ${contextHasCompanyName ? 'context-name' : ''} ${isEarlyResult ? 'early' : ''})`);
+      }
+      
+      return isStrong;
+    });
+    
+    // STEP 3: If we have strong matches, use them. Otherwise, use top 10 by position
+    if (strongMatches.length > 0) {
+      console.log(`🎯 Using ${strongMatches.length} strong matches`);
+      return strongMatches.slice(0, 8); // Limit to top 8 for AI
+    } else {
+      console.log(`🔧 No strong matches, using top 10 by position`);
+      return nonPlatformDomains
+        .sort((a, b) => a.position - b.position)
+        .slice(0, 10);
+    }
+  }
+
+  async useOpenAIForFinalSelection(domains, companyName) {
+    console.log(`🤖 Using OpenAI 3.5 for final selection among ${domains.length} candidates`);
+    
+    try {
+      const OpenAI = require('openai');
+      const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+      
+      // Compact domain list for cost efficiency
+      const domainList = domains.map((item, index) => {
+        return `${index + 1}. ${item.domain} - ${item.context.substring(0, 80)}...`;
+      }).join('\n');
+      
+      const prompt = `Company: "${companyName}"
+Domains found in Google search:
+${domainList}
+
+Which domain is the actual official website for "${companyName}"?
+
+Rules:
+- Company name may be abbreviated (e.g., "IWS" for "International Widget Solutions")
+- Any TLD is valid (.com, .net, .org, .ai, .gov, etc.)
+- Look for the domain that clearly belongs to this specific company
+- Ignore platform domains
+
+Respond with just the domain name or "NONE".`;
+
+      const response = await openai.chat.completions.create({
+        model: "gpt-3.5-turbo", // FIXED: Using cost-optimized model
+        messages: [{ role: "user", content: prompt }],
+        temperature: 0.1,
+        max_tokens: 50
+      });
+
+      const selectedDomain = response.choices[0].message.content?.trim().toLowerCase();
+      
+      if (selectedDomain && selectedDomain !== 'none') {
+        const matchingDomain = domains.find(item => 
+          item.domain.toLowerCase() === selectedDomain
+        );
+        
+        if (matchingDomain) {
+          console.log(`🎯 OpenAI 3.5 selected: ${selectedDomain}`);
+          return selectedDomain;
+        }
+      }
+      
+    } catch (aiError) {
+      console.error('❌ OpenAI selection failed:', aiError.message);
+    }
+    
+    // Fallback: Return highest positioned domain
+    if (domains.length > 0) {
+      const fallbackDomain = domains.sort((a, b) => a.position - b.position)[0];
+      console.log(`🔧 Fallback: Using earliest domain: ${fallbackDomain.domain}`);
+      return fallbackDomain.domain;
+    }
+    
+    return null;
   }
 
   extractEveryPossibleDomain(html) {
@@ -137,7 +248,7 @@ class BrightDataService {
     try {
       console.log(`🔍 MAXIMUM COVERAGE domain extraction...`);
       
-      // Strategy 1: All href links (most reliable source)
+      // Strategy 1: All href links in order of appearance
       const hrefPattern = /<a[^>]+href="(https?:\/\/[^"]+)"[^>]*>(.*?)<\/a>/gi;
       let hrefMatch;
       let position = 1;
@@ -153,7 +264,6 @@ class BrightDataService {
           if (this.isValidDomain(domain) && !foundDomains.has(domain)) {
             foundDomains.add(domain);
             
-            // Get rich context around this domain
             const richContext = this.extractRichContextForDomain(html, domain, linkText, url);
             
             domains.push({
@@ -164,24 +274,18 @@ class BrightDataService {
               position: position++,
               source: 'href'
             });
-            
-            console.log(`  ${domains.length}. ${domain} - "${linkText.substring(0, 50)}..."`);
           }
         } catch (urlError) {
           // Skip invalid URLs
         }
       }
       
-      // Strategy 2: Domain mentions in visible text
+      // Strategy 2: Domain mentions in text
       const visibleText = html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
       const textDomainPatterns = [
-        // Standard domain pattern
         /(?:^|\s)([a-zA-Z0-9-]+\.[a-zA-Z]{2,})(?=\s|$|\/|:)/g,
-        // Domain with protocol mentions
         /(?:https?:\/\/)?(?:www\.)?([a-zA-Z0-9-]+\.[a-zA-Z]{2,})/g,
-        // Quoted domains
         /"([a-zA-Z0-9-]+\.[a-zA-Z]{2,})"/g,
-        // Parentheses domains
         /\(([a-zA-Z0-9-]+\.[a-zA-Z]{2,})\)/g
       ];
       
@@ -203,13 +307,11 @@ class BrightDataService {
               position: position++,
               source: 'text'
             });
-            
-            console.log(`  ${domains.length}. ${domain} (from text)`);
           }
         }
       });
       
-      // Strategy 3: Extract from meta tags and structured data
+      // Strategy 3: Meta tags
       const metaDomains = this.extractFromMetaAndStructured(html);
       metaDomains.forEach(domainInfo => {
         if (!foundDomains.has(domainInfo.domain)) {
@@ -219,8 +321,6 @@ class BrightDataService {
             position: position++,
             source: 'meta'
           });
-          
-          console.log(`  ${domains.length}. ${domainInfo.domain} (from meta)`);
         }
       });
       
@@ -235,16 +335,13 @@ class BrightDataService {
 
   extractRichContextForDomain(html, domain, linkText, url) {
     try {
-      // Find the position of this URL in the HTML
       const urlIndex = html.indexOf(url);
       if (urlIndex === -1) return linkText;
       
-      // Extract a large context window around the URL
-      const contextStart = Math.max(0, urlIndex - 800);
-      const contextEnd = Math.min(html.length, urlIndex + url.length + 800);
+      const contextStart = Math.max(0, urlIndex - 400);
+      const contextEnd = Math.min(html.length, urlIndex + url.length + 400);
       const rawContext = html.substring(contextStart, contextEnd);
       
-      // Clean the context and make it readable
       const cleanContext = rawContext
         .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
         .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
@@ -252,10 +349,7 @@ class BrightDataService {
         .replace(/\s+/g, ' ')
         .trim();
       
-      // Combine link text with surrounding context
-      const fullContext = `${linkText} ${cleanContext}`.substring(0, 500);
-      
-      return fullContext;
+      return `${linkText} ${cleanContext}`.substring(0, 300);
       
     } catch (error) {
       return linkText;
@@ -264,12 +358,11 @@ class BrightDataService {
 
   extractTextContextForDomain(text, domain) {
     try {
-      // Find context around domain mentions in text
       const domainIndex = text.toLowerCase().indexOf(domain);
       if (domainIndex === -1) return '';
       
-      const start = Math.max(0, domainIndex - 150);
-      const end = Math.min(text.length, domainIndex + domain.length + 150);
+      const start = Math.max(0, domainIndex - 100);
+      const end = Math.min(text.length, domainIndex + domain.length + 100);
       
       return text.substring(start, end).trim();
       
@@ -282,7 +375,6 @@ class BrightDataService {
     const domains = [];
     
     try {
-      // Extract from meta tags
       const metaPatterns = [
         /<meta[^>]+property="og:url"[^>]+content="(https?:\/\/[^"]+)"/gi,
         /<meta[^>]+name="twitter:domain"[^>]+content="([^"]+)"/gi,
@@ -318,149 +410,11 @@ class BrightDataService {
     return domains;
   }
 
-  async useOpenAIForIntelligentDomainSelection(domains, companyName) {
-    console.log(`🤖 Using OpenAI to intelligently select domain for: ${companyName}`);
-    
-    try {
-      const OpenAI = require('openai');
-      const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-      
-      // Prepare comprehensive domain analysis for OpenAI
-      const domainAnalysis = domains.slice(0, 15).map((item, index) => {
-        return `${index + 1}. Domain: ${item.domain}
-   Context: ${item.context}
-   Link Text: ${item.linkText}
-   Source: ${item.source}
-   Position: ${item.position}`;
-      }).join('\n\n');
-      
-      const prompt = `You are analyzing Google search results to find the actual official website domain for the company "${companyName}".
-
-Company Name: "${companyName}"
-
-Here are ALL the domains found in the search results with their context:
-
-${domainAnalysis}
-
-Your task is to identify which domain is the ACTUAL official website for "${companyName}".
-
-IMPORTANT GUIDELINES:
-1. The company name might appear abbreviated, shortened, or in different forms in the domain (e.g., "IWS" for "International Widget Solutions")
-2. Look for domains that clearly belong to this specific company based on context
-3. Consider context clues like "official website", company descriptions, etc.
-4. ANY TLD is valid (.com, .net, .org, .co.uk, .gov, .ai, etc.)
-5. Short domain names can be valid (e.g., "iws.com" for "International Widget Solutions")
-6. Ignore platform domains like LinkedIn, Facebook, Crunchbase, Wikipedia, Amazon, eBay
-7. The official domain might not be the first result - read all contexts carefully
-8. Look for domains mentioned in company descriptions or official contexts
-9. If multiple domains seem valid, pick the most official-looking one
-10. If NONE of these domains actually belong to "${companyName}", respond with "NONE"
-
-Respond with ONLY the domain name (e.g., "microsoft.com" or "iws.com") or "NONE" if no actual company domain is found.`;
-
-      const response = await openai.chat.completions.create({
-        model: "gpt-4", // Using GPT-4 for maximum intelligence
-        messages: [{ role: "user", content: prompt }],
-        temperature: 0.1,
-        max_tokens: 100
-      });
-
-      const selectedDomain = response.choices[0].message.content?.trim().toLowerCase();
-      
-      if (selectedDomain && selectedDomain !== 'none') {
-        // Verify the selected domain exists in our candidates
-        const matchingDomain = domains.find(item => 
-          item.domain.toLowerCase() === selectedDomain
-        );
-        
-        if (matchingDomain) {
-          console.log(`🎯 OpenAI selected actual company domain: ${selectedDomain}`);
-          console.log(`🔍 Context: ${matchingDomain.context.substring(0, 100)}...`);
-          return selectedDomain;
-        } else {
-          console.log(`⚠️ OpenAI selected domain not in candidates: ${selectedDomain}`);
-          
-          // Check if it's a close match (case sensitivity, www prefix, etc.)
-          const closeMatch = domains.find(item => {
-            const itemDomain = item.domain.toLowerCase();
-            const selectedLower = selectedDomain.toLowerCase();
-            return itemDomain === selectedLower || 
-                   itemDomain === `www.${selectedLower}` ||
-                   `www.${itemDomain}` === selectedLower;
-          });
-          
-          if (closeMatch) {
-            console.log(`✅ Found close match: ${closeMatch.domain}`);
-            return closeMatch.domain;
-          }
-        }
-      } else {
-        console.log(`❌ OpenAI determined no actual company domain exists for: ${companyName}`);
-      }
-      
-    } catch (aiError) {
-      console.error('❌ OpenAI domain analysis failed:', aiError.message);
-      
-      // Fallback: Use intelligent scoring without AI
-      return this.fallbackIntelligentSelection(domains, companyName);
-    }
-    
-    return null;
-  }
-
-  fallbackIntelligentSelection(domains, companyName) {
-    console.log(`🔧 Using intelligent fallback for: ${companyName}`);
-    
-    const companyWords = this.normalizeCompanyName(companyName);
-    let bestMatch = null;
-    let bestScore = 0;
-    
-    domains.forEach(item => {
-      let score = 0;
-      const domain = item.domain.toLowerCase();
-      const context = item.context.toLowerCase();
-      
-      // Massive penalty for platform domains
-      const platformDomains = ['linkedin.com', 'facebook.com', 'crunchbase.com', 'amazon.com', 'ebay.com'];
-      if (platformDomains.includes(domain)) {
-        score -= 1000;
-        return;
-      }
-      
-      // Score for company words in domain
-      companyWords.forEach(word => {
-        if (word.length >= 2 && domain.includes(word)) {
-          score += word.length * 20;
-        }
-      });
-      
-      // Score for company name in context
-      if (context.includes(companyName.toLowerCase())) {
-        score += 100;
-      }
-      
-      // Score for position (earlier is better)
-      score += Math.max(0, 30 - item.position * 2);
-      
-      if (score > bestScore) {
-        bestScore = score;
-        bestMatch = item;
-      }
-    });
-    
-    if (bestMatch && bestScore > 10) {
-      console.log(`🎯 Fallback selection: ${bestMatch.domain} (${bestScore} points)`);
-      return bestMatch.domain;
-    }
-    
-    return null;
-  }
-
   isValidDomain(domain) {
     if (!domain || typeof domain !== 'string') return false;
     
     return domain.includes('.') && 
-           domain.length > 2 && // Allow very short domains like "ai.com"
+           domain.length > 2 &&
            domain.length < 100 &&
            /^[a-zA-Z0-9.-]+$/.test(domain) &&
            !domain.startsWith('.') &&
@@ -543,6 +497,7 @@ Respond with ONLY the domain name (e.g., "microsoft.com" or "iws.com") or "NONE"
     const queries = [];
     
     if (company && company.trim()) {
+      // Primary queries with company name (from your Python version)
       queries.push(`CEO of ${company} ${domain}`);
       queries.push(`CEO of ${company}`);
       queries.push(`${company} leadership`);
@@ -550,6 +505,7 @@ Respond with ONLY the domain name (e.g., "microsoft.com" or "iws.com") or "NONE"
       queries.push(`${company} president founder`);
       queries.push(`"${company}" CEO site:${domain}`);
     } else {
+      // Fallback queries when no company name
       queries.push(`CEO of ${domain}`);
       queries.push(`site:${domain} CEO`);
       queries.push(`${domain} chief executive`);
