@@ -1,86 +1,54 @@
-const { redisClient } = require('../utils/queue');
+const redis = require('redis');
 
 class CacheService {
   constructor() {
-    this.domainTTL = 7 * 24 * 60 * 60; // 7 days for domains
-    this.ceoTTL = 24 * 60 * 60; // 1 day for CEOs
+    this.client = redis.createClient({
+      url: process.env.REDIS_URL
+    });
+    
+    this.client.on('error', (err) => {
+      console.error('❌ Redis error:', err);
+    });
+    
+    this.client.on('connect', () => {
+      console.log('✅ Redis connected');
+    });
+    
+    this.client.connect();
   }
-  
-  async getDomain(companyName) {
+
+  async get(key) {
     try {
-      if (!redisClient || !redisClient.isReady) {
-        console.log('⚠️ Redis not ready, skipping cache');
-        return null;
+      const value = await this.client.get(key);
+      if (value) {
+        console.log(`✅ Cache hit for: ${key}`);
       }
-      
-      const key = `domain:${companyName.toLowerCase().trim()}`;
-      const cached = await redisClient.get(key);
-      
-      if (cached) {
-        console.log(`✅ Cache hit for domain: ${companyName} = ${cached}`);
-        return cached === 'NOT_FOUND' ? null : cached;
-      }
-      
-      return null;
+      return value;
     } catch (error) {
       console.error('❌ Cache get error:', error);
       return null;
     }
   }
-  
-  async setDomain(companyName, domain) {
+
+  async set(key, value, ttl = 86400) {
     try {
-      if (!redisClient || !redisClient.isReady) {
-        console.log('⚠️ Redis not ready, skipping cache');
-        return;
-      }
-      
-      const key = `domain:${companyName.toLowerCase().trim()}`;
-      const value = domain || 'NOT_FOUND';
-      
-      await redisClient.setEx(key, this.domainTTL, value);
-      console.log(`✅ Cached domain: ${companyName} = ${value} (TTL: ${this.domainTTL}s)`);
+      await this.client.setEx(key, ttl, value);
+      console.log(`✅ Cached: ${key} = ${value} (TTL: ${ttl}s)`);
+      return true;
     } catch (error) {
       console.error('❌ Cache set error:', error);
+      return false;
     }
   }
-  
-  async getCEO(domain) {
+
+  async del(key) {
     try {
-      if (!redisClient || !redisClient.isReady) {
-        console.log('⚠️ Redis not ready, skipping cache');
-        return null;
-      }
-      
-      const key = `ceo:${domain.toLowerCase().trim()}`;
-      const cached = await redisClient.get(key);
-      
-      if (cached) {
-        console.log(`✅ Cache hit for CEO: ${domain} = ${cached}`);
-        return cached === 'NOT_FOUND' ? null : cached;
-      }
-      
-      return null;
+      await this.client.del(key);
+      console.log(`✅ Cache deleted: ${key}`);
+      return true;
     } catch (error) {
-      console.error('❌ Cache get error:', error);
-      return null;
-    }
-  }
-  
-  async setCEO(domain, ceoName) {
-    try {
-      if (!redisClient || !redisClient.isReady) {
-        console.log('⚠️ Redis not ready, skipping cache');
-        return;
-      }
-      
-      const key = `ceo:${domain.toLowerCase().trim()}`;
-      const value = ceoName || 'NOT_FOUND';
-      
-      await redisClient.setEx(key, this.ceoTTL, value);
-      console.log(`✅ Cached CEO: ${domain} = ${value} (TTL: ${this.ceoTTL}s)`);
-    } catch (error) {
-      console.error('❌ Cache set error:', error);
+      console.error('❌ Cache del error:', error);
+      return false;
     }
   }
 }

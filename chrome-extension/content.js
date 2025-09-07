@@ -1,36 +1,38 @@
-console.log('🚀 [CONTENT] LinkedIn Lead Extractor v2.0 - BACK TO WORKING APPROACH');
+console.log('🚀 [CONTENT] LinkedIn Lead Extractor v2.0 loaded - With Frontend Duplicates');
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   console.log('📨 [CONTENT] Message received:', request.action);
   
   if (request.action === 'extractLeads') {
     const maxPages = request.maxPages || 1;
+    const fileId = request.fileId;
+    const fileName = request.fileName;
     
     console.log(`🚀 [CONTENT] Starting extraction for ${maxPages} pages with duplicate checking`);
     
     (async () => {
       try {
-        const result = await extractWithDuplicateChecking(maxPages);
+        const result = await extractWithDuplicateChecking(maxPages, fileId, fileName);
         
-        console.log('📤 [CONTENT] Extraction complete, returning leads to popup:', result);
+        console.log('📤 [CONTENT] Extraction complete:', result);
         
         sendResponse({ 
           success: true, 
-          leads: result.leads,
-          leadsCount: result.leads.length,
+          leadsCount: result.totalLeads,
           pagesProcessed: result.pagesProcessed,
+          savedToDatabase: result.savedCount,
           duplicatesFound: result.duplicatesCount
         });
         
-        console.log('✅ [CONTENT] Response sent to popup successfully');
+        console.log('✅ [CONTENT] Response sent successfully');
         
       } catch (error) {
         console.error('❌ [CONTENT] Extraction error:', error);
         sendResponse({ 
           success: false, 
           error: error.message,
-          leads: [],
-          leadsCount: 0
+          leadsCount: 0,
+          savedToDatabase: 0
         });
       }
     })();
@@ -41,36 +43,26 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   return false;
 });
 
-async function extractWithDuplicateChecking(maxPages) {
+async function extractWithDuplicateChecking(maxPages, fileId, fileName) {
   console.log(`[CONTENT] Starting extraction with duplicate checking for ${maxPages} pages`);
   
   const allLeads = [];
   let currentPage = 1;
   let pagesProcessed = 0;
+  let totalSaved = 0;
   let totalDuplicates = 0;
-  let totalStats = { new: 0, duplicates: 0, failed: 0, processed: 0 };
+  let totalStats = { new: 0, duplicates: 0, failed: 0, processed: 0, saved: 0 };
   
   // Create persistent stats box
   addPersistentStatsIndicator(maxPages);
   
   try {
-    // Get initial page number from URL
-    const urlMatch = window.location.href.match(/[#&]page=(\d+)/);
-    if (urlMatch) {
-      currentPage = parseInt(urlMatch[1]);
-      console.log(`[CONTENT] Starting from URL page: ${currentPage}`);
-    }
-    
     while (currentPage <= maxPages) {
       console.log(`[CONTENT] 📄 Processing page ${currentPage}/${maxPages}`);
       updatePersistentStats(currentPage, maxPages, `Extracting page ${currentPage}...`, totalStats);
       
-      // CRITICAL: Scroll to top immediately when page loads
-      window.scrollTo(0, 0);
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      
       // Extract leads from current page with duplicate checking
-      const pageResult = await extractPageWithDuplicateCheck(currentPage, totalStats);
+      const pageResult = await extractPageWithDuplicateCheck(currentPage, totalStats, fileId, fileName);
       
       if (pageResult.newLeads.length === 0 && pageResult.duplicates === 0 && pageResult.failed === 0) {
         console.log(`[CONTENT] No leads found on page ${currentPage}, stopping`);
@@ -79,7 +71,18 @@ async function extractWithDuplicateChecking(maxPages) {
       
       console.log(`[CONTENT] ✅ Page ${currentPage}: ${pageResult.newLeads.length} NEW, ${pageResult.duplicates} duplicates, ${pageResult.failed} failed`);
       
-      // Add NEW leads to the total collection (popup will handle database)
+      // Save only NEW leads to database
+      if (pageResult.newLeads.length > 0) {
+        updatePersistentStats(currentPage, maxPages, `Saving ${pageResult.newLeads.length} NEW leads to database...`, totalStats);
+        
+        const savedCount = await sendLeadsToDatabase(pageResult.newLeads, fileId, fileName);
+        totalSaved += savedCount;
+        totalStats.saved += savedCount;
+        
+        console.log(`[CONTENT] 💾 Saved ${savedCount}/${pageResult.newLeads.length} NEW leads from page ${currentPage}`);
+        updatePersistentStats(currentPage, maxPages, `✅ Verified ${savedCount} leads saved to database`, totalStats);
+      }
+      
       allLeads.push(...pageResult.newLeads);
       pagesProcessed = currentPage;
       totalDuplicates += pageResult.duplicates;
@@ -90,7 +93,7 @@ async function extractWithDuplicateChecking(maxPages) {
       totalStats.failed += pageResult.failed;
       totalStats.processed += pageResult.totalProcessed;
       
-      updatePersistentStats(currentPage, maxPages, `Page ${currentPage} complete - ${totalStats.new} leads extracted`, totalStats);
+      updatePersistentStats(currentPage, maxPages, `Page ${currentPage} complete - ${totalStats.saved} total saved`, totalStats);
       
       // Go to next page if not the last page
       if (currentPage < maxPages) {
@@ -103,16 +106,16 @@ async function extractWithDuplicateChecking(maxPages) {
         }
         
         currentPage++;
-        await waitForNewPageLoadComplete(currentPage);
+        await new Promise(resolve => setTimeout(resolve, 3000));
       } else {
         break;
       }
     }
     
     console.log(`[CONTENT] 🎉 EXTRACTION COMPLETE!`);
-    console.log(`[CONTENT] Final results: ${totalStats.new} NEW leads extracted, ${totalStats.duplicates} duplicates found`);
+    console.log(`[CONTENT] Final results: ${totalStats.new} NEW, ${totalStats.duplicates} duplicates, ${totalSaved} saved`);
     
-    updatePersistentStats(pagesProcessed, maxPages, `🎉 COMPLETE! ${totalStats.new} leads extracted, ${totalStats.duplicates} duplicates`, totalStats);
+    updatePersistentStats(pagesProcessed, maxPages, `🎉 COMPLETE! ${totalSaved} saved, ${totalStats.duplicates} duplicates found`, totalStats);
     
     // Keep stats visible for 60 seconds
     setTimeout(() => {
@@ -121,9 +124,10 @@ async function extractWithDuplicateChecking(maxPages) {
     }, 60000);
     
     return {
-      leads: allLeads,
-      pagesProcessed: pagesProcessed,
-      duplicatesCount: totalDuplicates
+      totalLeads: allLeads.length,
+      savedCount: totalSaved,
+      duplicatesCount: totalDuplicates,
+      pagesProcessed: pagesProcessed
     };
     
   } catch (error) {
@@ -134,7 +138,7 @@ async function extractWithDuplicateChecking(maxPages) {
   }
 }
 
-async function extractPageWithDuplicateCheck(currentPage, globalStats) {
+async function extractPageWithDuplicateCheck(currentPage, globalStats, fileId, fileName) {
   const allExtractedData = [];
   const newLeads = [];
   let failedCount = 0;
@@ -188,7 +192,8 @@ async function extractPageWithDuplicateCheck(currentPage, globalStats) {
         new: globalStats.new,
         duplicates: globalStats.duplicates,
         failed: globalStats.failed + failedCount,
-        processed: globalStats.processed + totalProcessed
+        processed: globalStats.processed + totalProcessed,
+        saved: globalStats.saved
       };
       updatePersistentStats(currentPage, 1, `Processing profile ${totalProcessed}...`, currentStats);
     }
@@ -265,7 +270,7 @@ async function checkPageDuplicates(leads) {
       const timeout = setTimeout(() => {
         console.log('[CONTENT] ⏰ Duplicate check timeout, assuming all new');
         resolve({ success: false });
-      }, 10000); // Shorter timeout
+      }, 15000);
       
       chrome.runtime.sendMessage({ 
         action: 'checkDuplicates', 
@@ -293,6 +298,48 @@ async function checkPageDuplicates(leads) {
   } catch (error) {
     console.error('[CONTENT] ❌ Error checking duplicates:', error);
     return leads.map(() => false); // Assume all new on error
+  }
+}
+
+async function sendLeadsToDatabase(leads, fileId, fileName) {
+  try {
+    console.log(`[CONTENT] 📤 Sending ${leads.length} NEW leads to database...`);
+    
+    const response = await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error('Database send timeout'));
+      }, 30000);
+      
+      chrome.runtime.sendMessage({ 
+        action: 'sendToDatabase', 
+        payload: {
+          leads: leads,
+          fileId: fileId,
+          fileName: fileName,
+          userId: 'chrome_extension_user'
+        }
+      }, (response) => {
+        clearTimeout(timeout);
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message));
+        } else {
+          resolve(response);
+        }
+      });
+    });
+    
+    if (response && response.success) {
+      const insertedCount = response.result.insertedCount || 0;
+      console.log(`[CONTENT] ✅ Database save successful: ${insertedCount} inserted`);
+      return insertedCount;
+    } else {
+      console.error(`[CONTENT] ❌ Database save failed:`, response?.error);
+      return 0;
+    }
+    
+  } catch (error) {
+    console.error('[CONTENT] ❌ Database send error:', error);
+    return 0;
   }
 }
 
@@ -365,7 +412,8 @@ async function goToNextPageSequential(currentPageNum) {
     nextButton.click();
     console.log('[CONTENT] 🔄 Clicked next page button, waiting for page load...');
     
-    return true;
+    const pageLoaded = await waitForNewPageLoadComplete(nextPageNum);
+    return pageLoaded;
     
   } catch (error) {
     console.error('[CONTENT] Error navigating to next page:', error);
@@ -383,10 +431,6 @@ async function waitForNewPageLoadComplete(expectedPageNum) {
     const checkInterval = setInterval(() => {
       attempts++;
       
-      // Check URL for page number
-      const urlMatch = window.location.href.match(/[#&]page=(\d+)/);
-      const urlPageNum = urlMatch ? parseInt(urlMatch[1]) : 1;
-      
       // Check if we're on the expected page
       const currentPageElement = document.querySelector('[aria-current="true"]');
       const actualPageNum = currentPageElement ? parseInt(currentPageElement.textContent) : 0;
@@ -403,20 +447,16 @@ async function waitForNewPageLoadComplete(expectedPageNum) {
       
       // Check that we're not still loading
       const isLoading = document.querySelector('.artdeco-loader') || 
-                       document.querySelector('.loading-state');
+                       document.querySelector('.loading-state') ||
+                       document.querySelector('[data-test="loading"]');
       
       // All conditions for successful page load
-      const urlMatches = urlPageNum === expectedPageNum;
       const pageNumMatches = actualPageNum === expectedPageNum;
       const contentReady = hasProfiles && documentReady && hasValidNames && !isLoading;
       
-      if (urlMatches && pageNumMatches && contentReady) {
+      if (pageNumMatches && contentReady) {
         clearInterval(checkInterval);
         console.log(`[CONTENT] ✅ Page ${expectedPageNum} fully loaded with ${hasProfiles} profiles and valid names`);
-        
-        // Scroll to top immediately after page load
-        window.scrollTo(0, 0);
-        
         resolve(true);
         return;
       }
@@ -424,13 +464,14 @@ async function waitForNewPageLoadComplete(expectedPageNum) {
       if (attempts >= maxAttempts) {
         clearInterval(checkInterval);
         console.log(`[CONTENT] ⏰ Page load timeout after ${attempts} attempts`);
-        console.log(`[CONTENT] 🔍 Final status: urlPage=${urlPageNum}, actualPage=${actualPageNum}, expectedPage=${expectedPageNum}, hasProfiles=${hasProfiles}, documentReady=${documentReady}, hasValidNames=${hasValidNames}, isLoading=${!!isLoading}`);
+        console.log(`[CONTENT] 🔍 Final status: expectedPage=${expectedPageNum}, actualPage=${actualPageNum}, hasProfiles=${hasProfiles}, documentReady=${documentReady}, hasValidNames=${hasValidNames}, isLoading=${!!isLoading}`);
         resolve(false);
         return;
       }
       
       if (attempts % 5 === 0) { // Log every 5 attempts
         console.log(`[CONTENT] ⏳ Waiting for page ${expectedPageNum}... attempt ${attempts}/${maxAttempts}`);
+        console.log(`[CONTENT] 🔍 Status: expectedPage=${expectedPageNum}, actualPage=${actualPageNum}, profiles=${hasProfiles}, ready=${documentReady}, names=${hasValidNames}, loading=${!!isLoading}`);
       }
     }, 1100); // Was 1000ms, now 1100ms (+10%)
   });
@@ -659,7 +700,7 @@ function addPersistentStatsIndicator(maxPages) {
               <span style="font-size: 16px;">✗</span> <span id="failed-count">FAILED: 0</span>
             </div>
             <div style="color: #87CEEB; font-weight: bold; margin-bottom: 4px;">
-              <span style="font-size: 16px;">📊</span> <span id="processed-count">PROCESSED: 0</span>
+              <span style="font-size: 16px;">💾</span> <span id="saved-count">SAVED: 0</span>
             </div>
           </div>
         </div>
@@ -717,7 +758,7 @@ function updatePersistentStats(currentPage, maxPages, details, stats) {
   const newCount = document.getElementById('new-count');
   const duplicateCount = document.getElementById('duplicate-count');
   const failedCount = document.getElementById('failed-count');
-  const processedCount = document.getElementById('processed-count');
+  const savedCount = document.getElementById('saved-count');
   
   if (progressText && progressBar && progressDetails) {
     progressText.textContent = `Page ${currentPage} of ${maxPages}`;
@@ -732,7 +773,7 @@ function updatePersistentStats(currentPage, maxPages, details, stats) {
   if (newCount) newCount.textContent = `NEW: ${stats.new}`;
   if (duplicateCount) duplicateCount.textContent = `DUPLICATES: ${stats.duplicates}`;
   if (failedCount) failedCount.textContent = `FAILED: ${stats.failed}`;
-  if (processedCount) processedCount.textContent = `PROCESSED: ${stats.processed}`;
+  if (savedCount) savedCount.textContent = `SAVED: ${stats.saved}`;
 }
 
 function removePersistentStats() {
@@ -746,4 +787,4 @@ function removePersistentStats() {
   }
 }
 
-console.log('✅ [CONTENT] Content script ready - POPUP HANDLES DATABASE (WORKING APPROACH)');
+console.log('✅ [CONTENT] Content script ready with frontend duplicate checking and 10% slower scrolling');

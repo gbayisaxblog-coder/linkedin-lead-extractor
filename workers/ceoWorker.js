@@ -1,119 +1,101 @@
-const { supabase } = require('../utils/database');
 const BrightDataService = require('../services/brightdata');
 const OpenAIService = require('../services/openai');
-const cacheService = require('../services/cache');
+const cache = require('../services/cache');
+const supabase = require('../utils/database');
 
-async function ceoWorker(job) {
-  const { leadId, domain, company } = job.data;
+const brightData = new BrightDataService();
+const openAI = new OpenAIService();
+
+module.exports = async function(job) {
+  const { leadId, domain, company, userId, retryCount = 0 } = job.data;
   
-  console.log(`👔 CEO worker processing lead ${leadId}: ${company} (${domain})`);
+  console.log(`👔 REAL CEO worker started for lead ${leadId}: ${company} (${domain})`);
   
   try {
-    // Check cache first
     const cacheKey = `ceo:${domain.toLowerCase()}`;
-    const cachedCEO = await cacheService.getCEO ? await cacheService.getCEO(domain) : null;
+    const cachedCEO = await cache.get(cacheKey);
     
-    if (cachedCEO) {
-      console.log(`🎯 Using cached CEO for ${domain}: ${cachedCEO}`);
-      await updateLeadWithCEO(leadId, cachedCEO);
-      return { success: true, ceo: cachedCEO, source: 'cache' };
+    if (cachedCEO && cachedCEO !== 'NOT_FOUND') {
+      console.log(`✅ Using cached CEO for ${domain}: ${cachedCEO}`);
+      
+      await supabase
+        .from('leads')
+        .update({
+          ceo_name: cachedCEO,
+          status: 'completed',
+          processed_at: new Date().toISOString()
+        })
+        .eq('id', leadId);
+      
+      return { success: true, ceo: cachedCEO, cached: true };
     }
-    
-    // Search for CEO using Bright Data + OpenAI
+
     console.log(`🔍 Searching for CEO of ${company} (${domain}) using Bright Data`);
+    const searchResults = await brightData.findCEO(domain, company);
     
-    const brightData = new BrightDataService();
-    const searchText = await brightData.findCEO(company, domain);
+    if (!searchResults) {
+      console.log(`❌ No search results for ${company}`);
+      await cache.set(cacheKey, 'NOT_FOUND', 3600);
+      return await handleFailure(leadId, userId, retryCount);
+    }
+
+    console.log(`🤖 Using OpenAI to extract CEO name from search results`);
+    const ceoName = await openAI.extractCEOName(domain, company, searchResults);
     
-    if (searchText) {
-      console.log(`✅ Got search text, extracting CEO with OpenAI...`);
+    if (ceoName) {
+      console.log(`✅ REAL CEO found for ${company}: ${ceoName}`);
       
-      const openai = new OpenAIService();
-      const ceoName = await openai.extractCEOFromText(searchText, company);
+      await cache.set(cacheKey, ceoName, 2592000); // Cache for 30 days
       
-      if (ceoName) {
-        console.log(`✅ CEO found: ${ceoName}`);
-        
-        // Cache the result
-        if (cacheService.setCEO) {
-          await cacheService.setCEO(domain, ceoName);
-        }
-        
-        // Update lead with CEO
-        await updateLeadWithCEO(leadId, ceoName);
-        
-        return { success: true, ceo: ceoName, source: 'brightdata+openai' };
-      } else {
-        console.log(`❌ No CEO extracted from search results for: ${company}`);
-        
-        // Cache negative result
-        if (cacheService.setCEO) {
-          await cacheService.setCEO(domain, null);
-        }
-        
-        await updateLeadStatus(leadId, 'completed');
-        return { success: false, error: 'CEO not found' };
-      }
+      await supabase
+        .from('leads')
+        .update({
+          ceo_name: ceoName,
+          status: 'completed',
+          processed_at: new Date().toISOString()
+        })
+        .eq('id', leadId);
+      
+      return { success: true, ceo: ceoName, cached: false };
     } else {
-      console.log(`❌ No search results for CEO of: ${company}`);
-      
-      // Cache negative result
-      if (cacheService.setCEO) {
-        await cacheService.setCEO(domain, null);
-      }
-      
-      await updateLeadStatus(leadId, 'completed');
-      return { success: false, error: 'No search results' };
+      console.log(`❌ No CEO name extracted for ${company}`);
+      await cache.set(cacheKey, 'NOT_FOUND', 3600);
+      return await handleFailure(leadId, userId, retryCount);
     }
     
   } catch (error) {
     console.error(`❌ CEO worker error for lead ${leadId}:`, error);
-    await updateLeadStatus(leadId, 'failed');
-    return { success: false, error: error.message };
+    return await handleFailure(leadId, userId, retryCount);
   }
-}
+};
 
-async function updateLeadWithCEO(leadId, ceoName) {
-  try {
-    const { error } = await supabase
+async function handleFailure(leadId, userId, retryCount) {
+  const supabase = require('../utils/database');
+  
+  if (retryCount === 0) {
+    console.log(`🔄 First failure for lead ${leadId}, releasing for retry`);
+    await supabase
       .from('leads')
       .update({
-        ceo_name: ceoName,
-        status: 'completed',
-        processed_at: new Date().toISOString(),
-        updated_at: new Date().toISOString()
+        status: 'released',
+        released_by: userId,
+        retry_count: 1
       })
       .eq('id', leadId);
     
-    if (error) {
-      console.error(`❌ Failed to update lead ${leadId} with CEO:`, error);
-    } else {
-      console.log(`✅ Updated lead ${leadId} with CEO: ${ceoName}`);
-    }
-  } catch (error) {
-    console.error(`❌ Error updating lead ${leadId}:`, error);
-  }
-}
-
-async function updateLeadStatus(leadId, status) {
-  try {
-    const { error } = await supabase
+    return { success: false, action: 'released' };
+  } else {
+    console.log(`❌ Second failure for lead ${leadId}, marking as failed`);
+    await supabase
       .from('leads')
-      .update({ 
-        status: status,
-        processed_at: new Date().toISOString(),
-        updated_at: new Date().toISOString()
+      .update({
+        status: 'failed',
+        released_by: userId,
+        retry_count: 2,
+        processed_at: new Date().toISOString()
       })
       .eq('id', leadId);
     
-    if (error) {
-      console.error(`❌ Failed to update lead ${leadId} status:`, error);
-    } else {
-      console.log(`✅ Updated lead ${leadId} status to: ${status}`);
-    }
-  } catch (error) {
-    console.error(`❌ Error updating lead ${leadId} status:`, error);
+    return { success: false, action: 'failed' };
   }
 }
-
-module.exports = { ceoWorker };

@@ -3,185 +3,172 @@ const axios = require('axios');
 class BrightDataService {
   constructor() {
     this.apiKey = process.env.BRIGHTDATA_API_KEY;
-    this.baseURL = 'https://api.brightdata.com/dca';
+    this.baseURL = 'https://api.brightdata.com/request';
     
-    if (!this.apiKey) {
-      throw new Error('BRIGHTDATA_API_KEY is required');
-    }
-    
-    console.log('🔧 Bright Data service initialized with API key: Present');
+    console.log('🔧 Bright Data service initialized');
   }
-  
+
   async findDomain(companyName) {
+    console.log(`🌐 Finding domain for: ${companyName}`);
+    
     try {
-      console.log(`🌐 Finding domain for company: ${companyName}`);
-      
       const searchQuery = `"${companyName}" website`;
-      console.log(`🔍 Domain search query: ${searchQuery}`);
       
-      const requestConfig = {
-        method: 'GET',
-        url: this.baseURL,
+      const response = await axios.post(this.baseURL, {
+        url: `https://www.google.com/search?q=${encodeURIComponent(searchQuery)}`,
+        zone: 'domain_finder',
+        country: 'US',
+        format: 'html'
+      }, {
         headers: {
           'Authorization': `Bearer ${this.apiKey}`,
           'Content-Type': 'application/json'
         },
-        params: {
-          url: `https://www.google.com/search?q=${encodeURIComponent(searchQuery)}`,
-          format: 'html'
-        },
         timeout: 30000
-      };
-      
-      console.log('📡 Making Bright Data request...');
-      const response = await axios(requestConfig);
-      
-      if (response.status === 200 && response.data) {
-        console.log('✅ Bright Data response received');
-        
+      });
+
+      if (response.data && response.status === 200) {
         const domain = this.extractDomainFromHTML(response.data, companyName);
         
         if (domain) {
-          console.log(`✅ Domain found: ${domain}`);
+          console.log(`✅ Domain found: ${companyName} → ${domain}`);
           return domain;
-        } else {
-          console.log(`❌ No domain found for: ${companyName}`);
-          return null;
         }
-      } else {
-        console.error('❌ Unexpected Bright Data response:', response.status);
-        return null;
       }
       
     } catch (error) {
-      console.error(`❌ Domain search error for "${companyName}":`, error.message);
-      
-      if (error.response) {
-        console.error('Error response data:', error.response.data);
-        console.error('Error response status:', error.response.status);
-      }
-      
-      return null;
+      console.error(`❌ Domain search failed for ${companyName}: ${error.message}`);
     }
+    
+    console.log(`❌ No domain found for: ${companyName}`);
+    return null;
   }
-  
-  async findCEO(companyName, domain) {
+
+  async findCEO(domain, companyName) {
+    console.log(`👔 Finding CEO: ${companyName} (${domain})`);
+    
+    // Use EXACT format: "CEO of company domain"
+    const query = `CEO of ${companyName} ${domain}`;
+    
     try {
-      console.log(`👔 Finding CEO for ${companyName} (${domain})`);
-      
-      const searchQuery = `CEO of ${companyName}`;
-      console.log(`🔍 CEO search query: ${searchQuery}`);
-      
-      const requestConfig = {
-        method: 'GET',
-        url: this.baseURL,
+      const response = await axios.post(this.baseURL, {
+        url: `https://www.google.com/search?q=${encodeURIComponent(query)}`,
+        zone: 'domain_finder',
+        country: 'US',
+        format: 'html'
+      }, {
         headers: {
           'Authorization': `Bearer ${this.apiKey}`,
           'Content-Type': 'application/json'
         },
-        params: {
-          url: `https://www.google.com/search?q=${encodeURIComponent(searchQuery)}`,
-          format: 'html'
-        },
         timeout: 30000
-      };
-      
-      console.log('📡 Making Bright Data CEO search...');
-      const response = await axios(requestConfig);
-      
-      if (response.status === 200 && response.data) {
-        console.log('✅ Bright Data CEO response received');
+      });
+
+      if (response.data && response.status === 200) {
+        const searchText = this.extractVisibleTextFromHTML(response.data);
         
-        const visibleText = this.extractVisibleTextFromHTML(response.data);
-        return visibleText;
-      } else {
-        console.error('❌ Unexpected Bright Data CEO response:', response.status);
-        return null;
-      }
-      
-    } catch (error) {
-      console.error(`❌ CEO search error for "${companyName}":`, error.message);
-      return null;
-    }
-  }
-  
-  extractDomainFromHTML(html, companyName) {
-    try {
-      console.log('🔍 Extracting domain from HTML response...');
-      
-      const domainRegex = /https?:\/\/(?:www\.)?([a-zA-Z0-9-]+\.[a-zA-Z]{2,})/g;
-      const domains = [];
-      let match;
-      
-      while ((match = domainRegex.exec(html)) !== null) {
-        const domain = match[1].toLowerCase();
-        
-        if (!this.isCommonDomain(domain) && this.isDomainRelevant(domain, companyName)) {
-          domains.push(domain);
+        if (searchText && searchText.length > 400) {
+          console.log(`✅ CEO search results found for ${companyName} (${searchText.length} chars)`);
+          return searchText.substring(0, 2000);
         }
       }
       
-      if (domains.length > 0) {
-        const bestDomain = domains[0];
-        console.log(`🎯 Selected domain: ${bestDomain} from ${domains.length} candidates`);
-        return bestDomain;
+    } catch (error) {
+      console.error(`❌ CEO search failed for ${companyName}: ${error.message}`);
+    }
+    
+    console.log(`❌ No CEO results for: ${companyName}`);
+    return '';
+  }
+
+  extractDomainFromHTML(html, companyName) {
+    try {
+      // Extract website links from search results
+      const linkPattern = /<a[^>]+href=["'](https?:\/\/[^"']+)["'][^>]*>/gi;
+      const domains = new Set();
+      let match;
+      
+      while ((match = linkPattern.exec(html)) !== null) {
+        const url = match[1];
+        
+        try {
+          const urlObj = new URL(url);
+          const domain = urlObj.hostname.replace(/^www\./, '');
+          
+          // Filter out non-company domains
+          const excludeDomains = [
+            'google.com', 'linkedin.com', 'facebook.com', 'twitter.com', 'youtube.com',
+            'instagram.com', 'wikipedia.org', 'crunchbase.com', 'glassdoor.com'
+          ];
+          
+          if (!excludeDomains.some(excluded => domain.includes(excluded))) {
+            domains.add(domain);
+          }
+        } catch (urlError) {
+          // Skip invalid URLs
+        }
       }
       
-      console.log('❌ No relevant domains found in HTML');
-      return null;
+      const domainArray = Array.from(domains);
+      
+      if (domainArray.length === 0) {
+        return null;
+      }
+      
+      // Find most relevant domain
+      const companyWords = companyName.toLowerCase().split(' ').filter(w => w.length > 2);
+      
+      // First, look for exact matches
+      for (const domain of domainArray) {
+        const domainText = domain.toLowerCase();
+        const matchCount = companyWords.filter(word => domainText.includes(word)).length;
+        
+        if (matchCount > 0) {
+          console.log(`🎯 Relevant domain: ${domain} (${matchCount} matches)`);
+          return domain;
+        }
+      }
+      
+      // If no matches, return first domain (likely the company's main site)
+      console.log(`🔧 Using first domain: ${domainArray[0]}`);
+      return domainArray[0];
       
     } catch (error) {
-      console.error('❌ Error extracting domain from HTML:', error);
+      console.error('Domain extraction error:', error);
       return null;
     }
   }
-  
+
   extractVisibleTextFromHTML(html) {
     try {
-      // Remove script and style tags
-      let cleanText = html
+      // Extract visible text like your Python script
+      let visibleText = html
         .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
         .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
         .replace(/<[^>]+>/g, ' ')
         .replace(/\s+/g, ' ')
         .trim();
       
-      // Limit text length for OpenAI processing
-      if (cleanText.length > 3000) {
-        cleanText = cleanText.substring(0, 3000);
+      // Focus on CEO-related content
+      const ceoKeywords = ['ceo', 'chief executive', 'president', 'founder', 'executive director'];
+      const sentences = visibleText.split('.').filter(sentence => {
+        const lowerSentence = sentence.toLowerCase();
+        return ceoKeywords.some(keyword => lowerSentence.includes(keyword)) && sentence.length > 20;
+      });
+      
+      if (sentences.length > 0) {
+        // Return the most relevant sentences
+        const relevantText = sentences.slice(0, 8).join('. ');
+        console.log(`📄 Extracted ${sentences.length} CEO-related sentences`);
+        return relevantText;
       }
       
-      return cleanText;
+      // Fallback: return first part of text
+      return visibleText.substring(0, 1500);
+      
     } catch (error) {
-      console.error('❌ Error extracting visible text:', error);
+      console.error('Text extraction error:', error);
       return '';
-    }
-  }
-  
-  isCommonDomain(domain) {
-    const commonDomains = [
-      'google.com', 'facebook.com', 'twitter.com', 'linkedin.com', 'youtube.com',
-      'instagram.com', 'wikipedia.org', 'amazon.com', 'apple.com', 'microsoft.com',
-      'github.com', 'stackoverflow.com', 'reddit.com', 'medium.com', 'wordpress.com'
-    ];
-    
-    return commonDomains.some(common => domain.includes(common));
-  }
-  
-  isDomainRelevant(domain, companyName) {
-    try {
-      const companyWords = companyName.toLowerCase()
-        .replace(/[^\w\s]/g, ' ')
-        .split(/\s+/)
-        .filter(word => word.length > 2 && !['inc', 'llc', 'corp', 'ltd', 'company', 'the', 'and', 'for', 'with'].includes(word));
-      
-      const domainParts = domain.toLowerCase().split('.');
-      
-      return companyWords.some(word => 
-        domainParts.some(part => part.includes(word) || word.includes(part))
-      );
-    } catch (error) {
-      return false;
     }
   }
 }

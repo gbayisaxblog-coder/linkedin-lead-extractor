@@ -1,41 +1,15 @@
+// routes/extraction.js - COMPLETE FIXED VERSION
 const express = require('express');
 const { supabase } = require('../utils/database');
 const router = express.Router();
 
-// BULLETPROOF QUEUE ACCESS using global registry + getter
-async function queueDomainJob(leadId, company) {
-  try {
-    // Try global registry first, then getter function
-    let domainQueue = global.queueRegistry?.domainQueue;
-    
-    if (!domainQueue) {
-      const { getDomainQueue, areQueuesReady } = require('../utils/queue');
-      
-      if (!areQueuesReady()) {
-        console.log(`⚠️ Queues not ready for lead ${leadId}`);
-        return false;
-      }
-      
-      domainQueue = getDomainQueue();
-    }
-    
-    if (!domainQueue) {
-      console.log(`❌ Domain queue not available for lead ${leadId}`);
-      return false;
-    }
-    
-    await domainQueue.add('findDomain', {
-      leadId: leadId,
-      company: company
-    });
-    
-    console.log(`🔄 Queued domain search for lead ${leadId}: ${company}`);
-    return true;
-    
-  } catch (error) {
-    console.error(`❌ Queue error for lead ${leadId}:`, error.message);
-    return false;
-  }
+// Import queues (will be initialized by server.js)
+let domainQueue;
+try {
+  const queueModule = require('../utils/queue');
+  domainQueue = queueModule.domainQueue;
+} catch (error) {
+  console.log('⚠️ Queue not yet initialized, will retry after server startup');
 }
 
 // Bulletproof extract route
@@ -53,6 +27,7 @@ router.post('/extract', async (req, res) => {
     
     let insertedCount = 0;
     let skippedCount = 0;
+    const insertedLeads = []; // Track inserted leads for queueing
     
     for (let i = 0; i < leads.length; i++) {
       const lead = leads[i];
@@ -98,16 +73,13 @@ router.post('/extract', async (req, res) => {
             skippedCount++;
           }
         } else if (data && data.length > 0) {
-          const leadId = data[0].id;
-          console.log(`✅ [${i + 1}] Success: ID ${leadId}`);
+          console.log(`✅ [${i + 1}] Success: ID ${data[0].id}`);
           insertedCount++;
-          
-          // BULLETPROOF DOMAIN QUEUING using global registry
-          const queued = await queueDomainJob(leadId, company);
-          if (!queued) {
-            console.log(`⚠️ [${i + 1}] Could not queue domain job for: ${company}`);
-          }
-          
+          insertedLeads.push({
+            id: data[0].id,
+            fullName,
+            company
+          });
         } else {
           console.log(`🔄 [${i + 1}] No data returned`);
           skippedCount++;
@@ -119,16 +91,53 @@ router.post('/extract', async (req, res) => {
       }
     }
     
+    // Queue domain finding jobs for inserted leads
+    if (insertedLeads.length > 0) {
+      try {
+        // Get queue reference if not available
+        if (!domainQueue) {
+          const queueModule = require('../utils/queue');
+          domainQueue = queueModule.domainQueue;
+        }
+        
+        if (domainQueue) {
+          console.log(`🚀 Queueing ${insertedLeads.length} domain finding jobs...`);
+          
+          for (const lead of insertedLeads) {
+            try {
+              await domainQueue.add('find-domain', {
+                leadId: lead.id,
+                company: lead.company,
+                userId: 'system'
+              }, {
+                delay: Math.random() * 5000 // Random delay 0-5 seconds
+              });
+              
+              console.log(`🎯 Queued domain job for lead ${lead.id}: ${lead.company}`);
+            } catch (queueError) {
+              console.error(`❌ Failed to queue domain job for lead ${lead.id}:`, queueError.message);
+            }
+          }
+        } else {
+          console.log('⚠️ Domain queue not available, leads will need manual processing');
+        }
+      } catch (queueError) {
+        console.error('❌ Queue error:', queueError.message);
+      }
+    }
+    
     console.log('=== SUMMARY ===');
     console.log(`✅ Inserted: ${insertedCount}`);
     console.log(`🔄 Skipped: ${skippedCount}`);
+    console.log(`🚀 Queued: ${insertedLeads.length} domain jobs`);
     console.log('===============');
     
     res.json({
       success: true,
       insertedCount: insertedCount,
       skippedCount: skippedCount,
-      totalProcessed: leads.length
+      totalProcessed: leads.length,
+      queuedJobs: insertedLeads.length
     });
     
   } catch (error) {
@@ -144,7 +153,7 @@ router.get('/status/:fileId', async (req, res) => {
     
     const { data: leads, error } = await supabase
       .from('leads')
-      .select('status, domain, ceo_name')
+      .select('status, ceo_name')
       .eq('file_id', fileId);
     
     if (error) {
@@ -157,7 +166,6 @@ router.get('/status/:fileId', async (req, res) => {
       processing: leads.filter(l => l.status === 'processing').length,
       completed: leads.filter(l => l.status === 'completed').length,
       failed: leads.filter(l => l.status === 'failed').length,
-      with_domain: leads.filter(l => l.domain).length,
       with_ceo: leads.filter(l => l.ceo_name).length
     });
     
@@ -179,6 +187,7 @@ router.post('/check-duplicates', async (req, res) => {
     
     const duplicateResults = [];
     
+    // Check each lead individually for duplicates
     for (const lead of leads) {
       const fullName = String(lead.fullName || '').toLowerCase().trim();
       const company = String(lead.company || '').toLowerCase().trim();

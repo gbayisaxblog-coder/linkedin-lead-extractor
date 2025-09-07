@@ -1,75 +1,67 @@
+// utils/queue.js - COMPLETE FIXED VERSION
 const { Queue, Worker } = require('bullmq');
-const Redis = require('redis');
+const Redis = require('ioredis');
 
-let redisClient;
+let redisConnection;
 let domainQueue;
 let ceoQueue;
-let queuesReady = false;
-
-// Global queue registry to avoid module caching issues
-global.queueRegistry = global.queueRegistry || {};
+let emailQueue;
 
 async function initializeQueues() {
   try {
     console.log('🔄 Initializing Redis and queues...');
     
-    redisClient = Redis.createClient({
-      url: process.env.REDIS_URL
+    // Create Redis connection using Railway environment variable
+    redisConnection = new Redis(process.env.REDIS_URL, {
+      maxRetriesPerRequest: null,
+      retryDelayOnFailover: 100,
+      enableReadyCheck: false,
+      lazyConnect: true
     });
     
-    await redisClient.connect();
-    console.log('✅ Redis connected successfully');
+    console.log('✅ Redis connected');
     
     // Create queues
-    console.log('🔧 Creating domain queue...');
     domainQueue = new Queue('domain-finding', {
-      connection: redisClient
+      connection: redisConnection,
+      defaultJobOptions: {
+        removeOnComplete: 100,
+        removeOnFail: 50,
+        attempts: 3,
+        backoff: {
+          type: 'exponential',
+          delay: 2000,
+        }
+      }
     });
     
-    console.log('🔧 Creating CEO queue...');
     ceoQueue = new Queue('ceo-finding', {
-      connection: redisClient
+      connection: redisConnection,
+      defaultJobOptions: {
+        removeOnComplete: 100,
+        removeOnFail: 50,
+        attempts: 2,
+        backoff: {
+          type: 'exponential',
+          delay: 3000,
+        }
+      }
     });
     
-    console.log('✅ Queues created - domainQueue:', !!domainQueue, 'ceoQueue:', !!ceoQueue);
-    
-    // ✅ CRITICAL: Store in global registry AND re-export
-    global.queueRegistry.domainQueue = domainQueue;
-    global.queueRegistry.ceoQueue = ceoQueue;
-    global.queueRegistry.redisClient = redisClient;
-    
-    module.exports.domainQueue = domainQueue;
-    module.exports.ceoQueue = ceoQueue;
-    module.exports.redisClient = redisClient;
-    
-    console.log('✅ Queues stored in global registry and re-exported');
-    
-    // Set up workers
-    console.log('🔧 Setting up queue workers...');
-    
-    // Domain worker
-    new Worker('domain-finding', async (job) => {
-      const { domainWorker } = require('../workers/domainWorker');
-      return await domainWorker(job);
-    }, {
-      connection: redisClient,
-      concurrency: 5
+    emailQueue = new Queue('email-finding', {
+      connection: redisConnection,
+      defaultJobOptions: {
+        removeOnComplete: 100,
+        removeOnFail: 50,
+        attempts: 2,
+        backoff: {
+          type: 'exponential',
+          delay: 1000,
+        }
+      }
     });
     
-    // CEO worker
-    new Worker('ceo-finding', async (job) => {
-      console.log('👔 CEO worker processing job:', job.id);
-      return { success: true, message: 'CEO worker placeholder' };
-    }, {
-      connection: redisClient,
-      concurrency: 3
-    });
-    
-    console.log('✅ Workers set up successfully');
-    
-    queuesReady = true;
-    console.log('✅ Queues marked as ready');
-    console.log('✅ Queues initialized successfully');
+    console.log('✅ All queues initialized successfully');
     
   } catch (error) {
     console.error('❌ Queue initialization error:', error);
@@ -77,30 +69,75 @@ async function initializeQueues() {
   }
 }
 
-// Getter functions that use global registry
-function getDomainQueue() {
-  const queue = global.queueRegistry?.domainQueue || domainQueue;
-  console.log('🔍 getDomainQueue called, returning:', !!queue);
-  return queue;
+async function startWorkers() {
+  try {
+    console.log('🔄 Starting queue workers...');
+    
+    // Domain finding worker
+    const domainWorker = new Worker('domain-finding', require('../workers/domainWorker'), {
+      connection: redisConnection,
+      concurrency: 5,
+      limiter: {
+        max: 10,
+        duration: 60000 // 10 jobs per minute
+      }
+    });
+    
+    domainWorker.on('completed', (job) => {
+      console.log(`✅ Domain job ${job.id} completed`);
+    });
+    
+    domainWorker.on('failed', (job, err) => {
+      console.error(`❌ Domain job ${job.id} failed:`, err.message);
+    });
+    
+    // CEO finding worker
+    const ceoWorker = new Worker('ceo-finding', require('../workers/ceoWorker'), {
+      connection: redisConnection,
+      concurrency: 3,
+      limiter: {
+        max: 6,
+        duration: 60000 // 6 jobs per minute
+      }
+    });
+    
+    ceoWorker.on('completed', (job) => {
+      console.log(`✅ CEO job ${job.id} completed`);
+    });
+    
+    ceoWorker.on('failed', (job, err) => {
+      console.error(`❌ CEO job ${job.id} failed:`, err.message);
+    });
+    
+    // Email finding worker
+    const emailWorker = new Worker('email-finding', require('../workers/emailWorker'), {
+      connection: redisConnection,
+      concurrency: 10
+    });
+    
+    emailWorker.on('completed', (job) => {
+      console.log(`✅ Email job ${job.id} completed`);
+    });
+    
+    emailWorker.on('failed', (job, err) => {
+      console.error(`❌ Email job ${job.id} failed:`, err.message);
+    });
+    
+    console.log('✅ All workers started successfully');
+    
+    return { domainWorker, ceoWorker, emailWorker };
+    
+  } catch (error) {
+    console.error('❌ Worker startup error:', error);
+    throw error;
+  }
 }
 
-function getCeoQueue() {
-  return global.queueRegistry?.ceoQueue || ceoQueue;
-}
-
-function areQueuesReady() {
-  const ready = queuesReady && !!(global.queueRegistry?.domainQueue || domainQueue);
-  console.log(`🔍 Queue readiness: ${ready} (flag: ${queuesReady}, global: ${!!global.queueRegistry?.domainQueue}, local: ${!!domainQueue})`);
-  return ready;
-}
-
-// Initial exports (will be updated after initialization)
 module.exports = {
   initializeQueues,
-  getDomainQueue,
-  getCeoQueue,
-  areQueuesReady,
-  domainQueue: null, // Will be updated
-  ceoQueue: null,    // Will be updated
-  redisClient: null  // Will be updated
+  startWorkers,
+  domainQueue,
+  ceoQueue,
+  emailQueue,
+  redisConnection
 };
