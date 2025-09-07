@@ -1,4 +1,4 @@
-// routes/extraction.js - COMPLETE WITH MANUAL TRIGGERS
+// routes/extraction.js - COMPLETE WITH CACHE CLEARING
 const express = require('express');
 const { supabase } = require('../utils/database');
 const router = express.Router();
@@ -93,11 +93,6 @@ router.post('/extract', async (req, res) => {
           
           for (const lead of insertedLeads) {
             try {
-              if (!lead.id || !lead.company) {
-                console.error(`❌ Invalid lead data for queueing:`, lead);
-                continue;
-              }
-              
               const jobData = {
                 leadId: lead.id,
                 company: lead.company,
@@ -163,6 +158,7 @@ router.get('/status/:fileId', async (req, res) => {
       processing: leads.filter(l => l.status === 'processing').length,
       completed: leads.filter(l => l.status === 'completed').length,
       failed: leads.filter(l => l.status === 'failed').length,
+      released: leads.filter(l => l.status === 'released').length,
       with_domain: leads.filter(l => l.domain).length,
       with_ceo: leads.filter(l => l.ceo_name).length
     });
@@ -222,116 +218,6 @@ router.post('/check-duplicates', async (req, res) => {
   } catch (error) {
     console.error('❌ Duplicate check error:', error);
     res.json({ duplicates: req.body.leads?.map(() => false) || [] });
-  }
-});
-
-// Queue monitoring route
-router.get('/queue-status', async (req, res) => {
-  try {
-    console.log('🔍 QUEUE STATUS: Checking queue status...');
-    
-    const queueModule = require('../utils/queue');
-    
-    let stats;
-    try {
-      if (queueModule.getQueueStats) {
-        stats = await queueModule.getQueueStats();
-      } else {
-        const domainQueue = queueModule.getDomainQueue ? queueModule.getDomainQueue() : queueModule.domainQueue;
-        const ceoQueue = queueModule.getCeoQueue ? queueModule.getCeoQueue() : queueModule.ceoQueue;
-        
-        if (domainQueue && ceoQueue) {
-          stats = {
-            initialized: queueModule.initialized,
-            domain: {
-              waiting: await domainQueue.getWaiting().then(jobs => jobs.length),
-              active: await domainQueue.getActive().then(jobs => jobs.length),
-              completed: await domainQueue.getCompleted().then(jobs => jobs.length),
-              failed: await domainQueue.getFailed().then(jobs => jobs.length)
-            },
-            ceo: {
-              waiting: await ceoQueue.getWaiting().then(jobs => jobs.length),
-              active: await ceoQueue.getActive().then(jobs => jobs.length),
-              completed: await ceoQueue.getCompleted().then(jobs => jobs.length),
-              failed: await ceoQueue.getFailed().then(jobs => jobs.length)
-            }
-          };
-        } else {
-          stats = { error: 'Queues not available' };
-        }
-      }
-    } catch (statsError) {
-      stats = { error: statsError.message };
-    }
-    
-    console.log('✅ QUEUE STATUS: Stats retrieved:', stats);
-    
-    res.json({
-      success: true,
-      queues: stats,
-      timestamp: new Date().toISOString()
-    });
-    
-  } catch (error) {
-    console.error('❌ Queue status error:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: error.message 
-    });
-  }
-});
-
-// Manual queue trigger for testing
-router.post('/trigger-domain-finding', async (req, res) => {
-  try {
-    const { leadId, company } = req.body;
-    
-    console.log('🔍 MANUAL TRIGGER: Request received:', { leadId, company });
-    
-    if (!leadId || !company) {
-      return res.status(400).json({ error: 'leadId and company required' });
-    }
-    
-    console.log('🔍 MANUAL TRIGGER: Loading queue module...');
-    const queueModule = require('../utils/queue');
-    
-    const domainQueue = queueModule.getDomainQueue ? queueModule.getDomainQueue() : queueModule.domainQueue;
-    
-    console.log('🔍 MANUAL TRIGGER: Domain queue available:', !!domainQueue);
-    
-    if (!domainQueue) {
-      return res.status(500).json({ 
-        error: 'Domain queue not available',
-        initialized: queueModule.initialized
-      });
-    }
-    
-    const jobData = {
-      leadId: leadId,
-      company: company,
-      userId: 'manual-trigger'
-    };
-    
-    console.log(`🔄 MANUAL TRIGGER: Adding job with data:`, jobData);
-    
-    const job = await domainQueue.add('find-domain', jobData);
-    
-    console.log(`🎯 MANUAL TRIGGER: Successfully queued job ${job.id} for lead ${leadId}: ${company}`);
-    
-    res.json({
-      success: true,
-      message: `Domain finding job queued for ${company}`,
-      jobId: job.id,
-      leadId,
-      company
-    });
-    
-  } catch (error) {
-    console.error('❌ MANUAL TRIGGER: Error:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: error.message
-    });
   }
 });
 
@@ -422,6 +308,8 @@ router.post('/trigger-stuck-processing', async (req, res) => {
       if (resetError) {
         return res.status(500).json({ error: resetError.message });
       }
+      
+      console.log(`✅ Reset ${stuckLeads.length} stuck leads to pending`);
     }
     
     const queueModule = require('../utils/queue');
@@ -442,7 +330,7 @@ router.post('/trigger-stuck-processing', async (req, res) => {
             retryCount: 0
           });
           queuedJobs++;
-          console.log(`🎯 Requeued CEO job for: ${lead.company} (${lead.domain})`);
+          console.log(`🎯 Requeued CEO job: ${lead.company} (${lead.domain})`);
         } else if (domainQueue) {
           // No domain, queue domain job
           await domainQueue.add('find-domain', {
@@ -451,7 +339,7 @@ router.post('/trigger-stuck-processing', async (req, res) => {
             userId: 'manual-stuck-trigger'
           });
           queuedJobs++;
-          console.log(`🎯 Requeued domain job for: ${lead.company}`);
+          console.log(`🎯 Requeued domain job: ${lead.company}`);
         }
       } catch (queueError) {
         console.error(`❌ Failed to requeue ${lead.id}:`, queueError.message);
@@ -467,6 +355,216 @@ router.post('/trigger-stuck-processing', async (req, res) => {
     
   } catch (error) {
     console.error('❌ Manual stuck trigger error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// CACHE CLEARING ROUTES
+router.post('/clear-domain-cache', async (req, res) => {
+  try {
+    const { company } = req.body;
+    
+    if (!company) {
+      return res.status(400).json({ error: 'Company name required' });
+    }
+    
+    const cache = require('../services/cache');
+    const cacheKey = `domain:${company.toLowerCase().replace(/[^a-z0-9]/g, '')}`;
+    
+    console.log(`🗑️ Clearing domain cache for: ${company} (key: ${cacheKey})`);
+    
+    const result = await cache.del(cacheKey);
+    
+    res.json({
+      success: true,
+      message: `Domain cache cleared for ${company}`,
+      cacheKey: cacheKey,
+      cleared: result
+    });
+    
+  } catch (error) {
+    console.error('❌ Clear domain cache error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.post('/clear-ceo-cache', async (req, res) => {
+  try {
+    const { domain } = req.body;
+    
+    if (!domain) {
+      return res.status(400).json({ error: 'Domain required' });
+    }
+    
+    const cache = require('../services/cache');
+    const cacheKey = `ceo:${domain.toLowerCase()}`;
+    
+    console.log(`🗑️ Clearing CEO cache for: ${domain} (key: ${cacheKey})`);
+    
+    const result = await cache.del(cacheKey);
+    
+    res.json({
+      success: true,
+      message: `CEO cache cleared for ${domain}`,
+      cacheKey: cacheKey,
+      cleared: result
+    });
+    
+  } catch (error) {
+    console.error('❌ Clear CEO cache error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.post('/clear-all-cache', async (req, res) => {
+  try {
+    console.log(`🗑️ Clearing ALL cache...`);
+    
+    const cache = require('../services/cache');
+    
+    // Clear all cache keys that start with 'domain:' or 'ceo:'
+    const result = await cache.flushall();
+    
+    res.json({
+      success: true,
+      message: `All cache cleared`,
+      result: result
+    });
+    
+  } catch (error) {
+    console.error('❌ Clear all cache error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Check specific lead status
+router.get('/check-lead/:leadId', async (req, res) => {
+  try {
+    const { leadId } = req.params;
+    
+    console.log(`🔍 Checking lead: ${leadId}`);
+    
+    const { data: lead, error } = await supabase
+      .from('leads')
+      .select('*')
+      .eq('id', leadId)
+      .single();
+    
+    if (error) {
+      return res.status(500).json({ error: error.message });
+    }
+    
+    if (!lead) {
+      return res.status(404).json({ error: 'Lead not found' });
+    }
+    
+    res.json({
+      success: true,
+      lead: {
+        id: lead.id,
+        full_name: lead.full_name,
+        company: lead.company,
+        domain: lead.domain,
+        ceo_name: lead.ceo_name,
+        status: lead.status,
+        retry_count: lead.retry_count,
+        created_at: lead.created_at,
+        updated_at: lead.updated_at,
+        processed_at: lead.processed_at
+      }
+    });
+    
+  } catch (error) {
+    console.error('❌ Check lead error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Manual domain trigger
+router.post('/trigger-domain-finding', async (req, res) => {
+  try {
+    const { leadId, company } = req.body;
+    
+    if (!leadId || !company) {
+      return res.status(400).json({ error: 'leadId and company required' });
+    }
+    
+    const queueModule = require('../utils/queue');
+    const domainQueue = queueModule.getDomainQueue ? queueModule.getDomainQueue() : queueModule.domainQueue;
+    
+    if (!domainQueue) {
+      return res.status(500).json({ error: 'Domain queue not available' });
+    }
+    
+    const jobData = {
+      leadId: leadId,
+      company: company,
+      userId: 'manual-trigger'
+    };
+    
+    const job = await domainQueue.add('find-domain', jobData);
+    
+    console.log(`🎯 Manual domain job queued: ${job.id} for ${company}`);
+    
+    res.json({
+      success: true,
+      message: `Domain finding job queued for ${company}`,
+      jobId: job.id,
+      leadId,
+      company
+    });
+    
+  } catch (error) {
+    console.error('❌ Manual domain trigger error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Queue status route
+router.get('/queue-status', async (req, res) => {
+  try {
+    const queueModule = require('../utils/queue');
+    
+    let stats;
+    try {
+      if (queueModule.getQueueStats) {
+        stats = await queueModule.getQueueStats();
+      } else {
+        const domainQueue = queueModule.getDomainQueue ? queueModule.getDomainQueue() : queueModule.domainQueue;
+        const ceoQueue = queueModule.getCeoQueue ? queueModule.getCeoQueue() : queueModule.ceoQueue;
+        
+        if (domainQueue && ceoQueue) {
+          stats = {
+            initialized: queueModule.initialized,
+            domain: {
+              waiting: await domainQueue.getWaiting().then(jobs => jobs.length),
+              active: await domainQueue.getActive().then(jobs => jobs.length),
+              completed: await domainQueue.getCompleted().then(jobs => jobs.length),
+              failed: await domainQueue.getFailed().then(jobs => jobs.length)
+            },
+            ceo: {
+              waiting: await ceoQueue.getWaiting().then(jobs => jobs.length),
+              active: await ceoQueue.getActive().then(jobs => jobs.length),
+              completed: await ceoQueue.getCompleted().then(jobs => jobs.length),
+              failed: await ceoQueue.getFailed().then(jobs => jobs.length)
+            }
+          };
+        } else {
+          stats = { error: 'Queues not available' };
+        }
+      }
+    } catch (statsError) {
+      stats = { error: statsError.message };
+    }
+    
+    res.json({
+      success: true,
+      queues: stats,
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('❌ Queue status error:', error);
     res.status(500).json({ error: error.message });
   }
 });
