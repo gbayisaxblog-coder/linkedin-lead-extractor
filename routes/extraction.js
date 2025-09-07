@@ -119,4 +119,58 @@ router.get('/status/:fileId', async (req, res) => {
   }
 });
 
+// Add this route to routes/extraction.js (before module.exports)
+router.post('/check-duplicates', async (req, res) => {
+  try {
+    const { leads } = req.body;
+    
+    if (!leads || !Array.isArray(leads)) {
+      return res.status(400).json({ error: 'Invalid leads data' });
+    }
+    
+    console.log(`🔍 Checking ${leads.length} leads for duplicates...`);
+    
+    const duplicateResults = [];
+    
+    // Check each lead individually for duplicates
+    for (const lead of leads) {
+      const fullName = String(lead.fullName || '').toLowerCase().trim();
+      const company = String(lead.company || '').toLowerCase().trim();
+      
+      if (!fullName || !company) {
+        duplicateResults.push(false);
+        continue;
+      }
+      
+      const { data: existingLead, error } = await supabase
+        .from('leads')
+        .select('id')
+        .ilike('full_name', fullName)
+        .ilike('company', company)
+        .limit(1);
+      
+      if (error) {
+        console.error('❌ Duplicate check error:', error);
+        duplicateResults.push(false);
+      } else {
+        const isDuplicate = existingLead && existingLead.length > 0;
+        duplicateResults.push(isDuplicate);
+        
+        if (isDuplicate) {
+          console.log(`🔄 Duplicate found: ${fullName} - ${company}`);
+        }
+      }
+    }
+    
+    const duplicateCount = duplicateResults.filter(d => d).length;
+    console.log(`✅ Duplicate check complete: ${duplicateCount} duplicates found out of ${leads.length}`);
+    
+    res.json({ duplicates: duplicateResults });
+    
+  } catch (error) {
+    console.error('❌ Duplicate check error:', error);
+    res.json({ duplicates: req.body.leads?.map(() => false) || [] });
+  }
+});
+
 module.exports = router;

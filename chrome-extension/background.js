@@ -75,6 +75,20 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   }
   
+  if (request.action === 'checkDuplicates') {
+    debugLog('🔄 Processing checkDuplicates:', { leadsCount: request.leads?.length });
+    checkDuplicates(request.leads)
+      .then(response => {
+        debugLog('✅ checkDuplicates completed:', { success: response.success, duration: Date.now() - startTime });
+        sendResponse(response);
+      })
+      .catch(error => {
+        debugLog('❌ checkDuplicates failed:', { error: error.message, duration: Date.now() - startTime });
+        sendResponse({ success: false, error: error.message });
+      });
+    return true;
+  }
+  
   debugLog('⚠️ Unknown action received:', request.action);
   sendResponse({ success: false, error: 'Unknown action: ' + request.action });
 });
@@ -217,6 +231,60 @@ async function getFileStats(fileId) {
   } catch (error) {
     debugLog('❌ getFileStats exception:', { message: error.message, stack: error.stack });
     return { success: false, error: error.message };
+  }
+}
+
+async function checkDuplicates(leads) {
+  try {
+    debugLog('🔍 Making checkDuplicates API call:', { leadsCount: leads?.length });
+    
+    if (!leads || !Array.isArray(leads) || leads.length === 0) {
+      debugLog('❌ Invalid leads data for duplicate check');
+      return { success: false, error: 'Invalid leads data' };
+    }
+    
+    const response = await fetch(`${API_BASE_URL}/extraction/check-duplicates`, {
+      method: 'POST',
+      headers: { 
+        'Content-Type': 'application/json',
+        'Cache-Control': 'no-cache',
+        'X-Debug-Source': 'chrome-extension-background'
+      },
+      body: JSON.stringify({ leads })
+    });
+    
+    debugLog('📡 checkDuplicates API response:', { status: response.status, ok: response.ok });
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      debugLog('❌ checkDuplicates API error:', { status: response.status, error: errorText });
+      
+      // Return all false (assume all new) if duplicate check fails
+      return { 
+        success: true, 
+        duplicates: leads.map(() => false),
+        error: `Duplicate check failed: ${response.status}`
+      };
+    }
+    
+    const result = await response.json();
+    const duplicateCount = result.duplicates?.filter(d => d).length || 0;
+    debugLog('✅ checkDuplicates success:', { 
+      totalChecked: leads.length, 
+      duplicatesFound: duplicateCount,
+      duplicateResults: result.duplicates 
+    });
+    
+    return { success: true, duplicates: result.duplicates };
+  } catch (error) {
+    debugLog('❌ checkDuplicates exception:', { message: error.message, stack: error.stack });
+    
+    // Return all false (assume all new) if duplicate check fails
+    return { 
+      success: true, 
+      duplicates: leads?.map(() => false) || [],
+      error: error.message
+    };
   }
 }
 

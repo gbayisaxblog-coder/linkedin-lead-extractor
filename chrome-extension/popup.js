@@ -177,10 +177,8 @@ async function runFullDebugTest() {
   try {
     debugLog('🧪 Test 3: Testing database send...');
     const testLeads = [{
-      firstName: 'DebugTest',
-      lastName: 'Person',
-      company: 'Debug Test Company',
       fullName: 'DebugTest Person',
+      company: 'Debug Test Company',
       extractedAt: new Date().toISOString()
     }];
     
@@ -353,7 +351,9 @@ async function extractLinkedInData() {
   try {
     const pageSelect = document.getElementById('pageSelect');
     const maxPages = parseInt(pageSelect?.value) || 1;
-    debugLog('📊 Extraction parameters:', { maxPages, fileId: currentFileId });
+    const fileName = document.getElementById('currentFile')?.textContent || 'Unknown';
+    
+    debugLog('📊 Extraction parameters:', { maxPages, fileId: currentFileId, fileName });
     
     const extractBtn = document.getElementById('extractBtn');
     if (extractBtn) {
@@ -390,7 +390,7 @@ async function extractLinkedInData() {
     debugLog('✅ API connection test passed');
     
     debugLog('📋 Step 2: Injecting content script...');
-    showSuccess('Step 2: Extracting from LinkedIn...');
+    showSuccess('Step 2: Injecting extraction script...');
     
     // Inject content script
     try {
@@ -405,18 +405,21 @@ async function extractLinkedInData() {
     
     await new Promise(resolve => setTimeout(resolve, 2000));
     
-    debugLog('📨 Step 3: Communicating with content script...');
-    showSuccess('Step 3: Extracting leads from LinkedIn page...');
+    debugLog('📨 Step 3: Starting independent extraction...');
+    showSuccess('Step 3: Starting LinkedIn extraction with independent database saving...');
+    showSuccess(`The content script will extract and save leads across ${maxPages} pages`);
+    showSuccess('You can close this popup - extraction will continue independently');
     
     const results = await new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         reject(new Error('Content script timeout - extraction took too long'));
-      }, 300000); // 5 minutes
+      }, 1800000); // 30 minutes for large extractions
       
       chrome.tabs.sendMessage(tab.id, { 
         action: 'extractLeads',
         maxPages: maxPages,
-        apiBaseUrl: API_BASE_URL
+        fileId: currentFileId,
+        fileName: fileName
       }, (response) => {
         clearTimeout(timeout);
         
@@ -447,107 +450,32 @@ async function extractLinkedInData() {
       });
     });
     
-    debugLog('📊 Extraction results:', {
-      leadsCount: results.leadsCount || results.leads?.length || 0,
-      pagesProcessed: results.pagesProcessed,
-      sampleLead: results.leads?.[0]
+    debugLog('📊 Final extraction results:', {
+      leadsCount: results.leadsCount || 0,
+      savedToDatabase: results.savedToDatabase || 0,
+      pagesProcessed: results.pagesProcessed || 0
     });
     
-    if (!results.leads || results.leads.length === 0) {
-      debugLog('⚠️ No leads extracted');
-      showSuccess('No new leads found on these pages!');
-      return;
+    showSuccess('Step 4: Extraction completed successfully!');
+    
+    if (results.savedToDatabase > 0) {
+      showSuccess(`✅ SUCCESS! ${results.savedToDatabase} leads saved to database from ${results.pagesProcessed} pages!`);
+      document.getElementById('totalLeads').textContent = results.savedToDatabase;
+    } else if (results.leadsCount > 0) {
+      showSuccess(`Extraction complete: ${results.leadsCount} leads processed from ${results.pagesProcessed} pages (may be duplicates)`);
+      document.getElementById('totalLeads').textContent = results.leadsCount;
+    } else {
+      showSuccess('No new leads found on the specified pages');
     }
     
-    debugLog('📋 Step 4: Sending to database...');
-    showSuccess(`Step 4: Sending ${results.leads.length} leads to database...`);
+    // Update UI stats
+    await updateFileStats(currentFileId);
+    startPolling();
     
-    const fileSelect = document.getElementById('fileSelect');
-    const fileName = fileSelect?.options[fileSelect.selectedIndex]?.text || 'Unknown';
-    
-    const requestPayload = {
-      leads: results.leads,
-      fileId: currentFileId,
-      fileName: fileName,
-      userId: 'chrome_extension_user'
-    };
-    
-    debugLog('📦 Database request payload:', {
-      leadsCount: requestPayload.leads.length,
-      fileId: requestPayload.fileId,
-      fileName: requestPayload.fileName,
-      sampleLead: requestPayload.leads[0],
-      payloadSize: JSON.stringify(requestPayload).length
-    });
-    
-    const dbResponse = await new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error('Database send timeout')), 30000);
-      chrome.runtime.sendMessage({ 
-        action: 'sendToDatabase', 
-        payload: requestPayload 
-      }, (response) => {
-        clearTimeout(timeout);
-        if (chrome.runtime.lastError) {
-          reject(new Error(chrome.runtime.lastError.message));
-        } else {
-          resolve(response);
-        }
-      });
-    });
-    
-    debugLog('📡 Database response received:', dbResponse);
-    
-    if (!dbResponse || !dbResponse.success) {
-      throw new Error(dbResponse?.error || 'Database request failed');
-    }
-    
-    debugLog('✅ Database send successful:', dbResponse.result);
-    
-    debugLog('📋 Step 5: Verifying database save...');
-    showSuccess('Step 5: Verifying database save...');
-    
-    // Verify save with multiple attempts
-    let verified = false;
-    for (let attempt = 1; attempt <= 5; attempt++) {
-      debugLog(`🔍 Verification attempt ${attempt}/5`);
-      
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      
-      try {
-        const statsResponse = await new Promise((resolve, reject) => {
-          const timeout = setTimeout(() => reject(new Error('Stats timeout')), 5000);
-          chrome.runtime.sendMessage({ 
-            action: 'getFileStats', 
-            fileId: currentFileId 
-          }, (response) => {
-            clearTimeout(timeout);
-            if (chrome.runtime.lastError) {
-              reject(new Error(chrome.runtime.lastError.message));
-            } else {
-              resolve(response);
-            }
-          });
-        });
-        
-        debugLog(`📊 Verification attempt ${attempt} response:`, statsResponse);
-        
-        if (statsResponse && statsResponse.success && statsResponse.stats.current_total > 0) {
-          verified = true;
-          debugLog('✅ Database save verified successfully');
-          showSuccess(`✅ SUCCESS! ${dbResponse.result.insertedCount} leads saved and verified in database!`);
-          
-          await updateFileStats(currentFileId);
-          startPolling();
-          break;
-        }
-      } catch (verifyError) {
-        debugLog(`❌ Verification attempt ${attempt} failed:`, verifyError);
-      }
-    }
-    
-    if (!verified) {
-      debugLog('❌ Could not verify database save after 5 attempts');
-      showError('⚠️ Extraction completed but could not verify database save. Check Railway logs.');
+    // Enable download if we have leads
+    const downloadBtn = document.getElementById('downloadBtn');
+    if (downloadBtn && (results.savedToDatabase > 0 || results.leadsCount > 0)) {
+      downloadBtn.disabled = false;
     }
     
   } catch (error) {
@@ -572,7 +500,13 @@ async function downloadCSV() {
   }
   
   try {
-    // Direct download via Railway API
+    const downloadBtn = document.getElementById('downloadBtn');
+    if (downloadBtn) {
+      downloadBtn.disabled = true;
+      downloadBtn.textContent = '⏳ Preparing...';
+    }
+    
+    // Direct download via Railway API (popup can access external URLs)
     const response = await fetch(`${API_BASE_URL}/export/csv/${currentFileId}`);
     
     if (!response.ok) {
@@ -597,6 +531,12 @@ async function downloadCSV() {
   } catch (error) {
     debugLog('❌ CSV download failed:', error);
     showError('Download failed: ' + error.message);
+  } finally {
+    const downloadBtn = document.getElementById('downloadBtn');
+    if (downloadBtn) {
+      downloadBtn.disabled = false;
+      downloadBtn.textContent = '📥 Download CSV';
+    }
   }
 }
 
