@@ -2,22 +2,21 @@ const express = require('express');
 const { supabase } = require('../utils/database');
 const router = express.Router();
 
-// BULLETPROOF QUEUE ACCESS with readiness check
+// BULLETPROOF QUEUE ACCESS using getter function
 async function queueDomainJob(leadId, company) {
   try {
-    const { domainQueue, areQueuesReady } = require('../utils/queue');
+    const { getDomainQueue, areQueuesReady } = require('../utils/queue');
     
-    // Check if queues are ready
     if (!areQueuesReady()) {
-      console.log(`⚠️ Queues not ready yet for lead ${leadId}, will queue in background`);
-      
-      // Queue the job for later processing
-      setTimeout(async () => {
-        console.log(`🔄 Retrying domain queue for lead ${leadId} after delay...`);
-        await queueDomainJobDelayed(leadId, company);
-      }, 5000);
-      
-      return true; // Return success to not block extraction
+      console.log(`⚠️ Queues not ready for lead ${leadId}`);
+      return false;
+    }
+    
+    const domainQueue = getDomainQueue();
+    
+    if (!domainQueue) {
+      console.log(`❌ Domain queue getter returned null for lead ${leadId}`);
+      return false;
     }
     
     await domainQueue.add('findDomain', {
@@ -32,33 +31,6 @@ async function queueDomainJob(leadId, company) {
     console.error(`❌ Queue error for lead ${leadId}:`, error.message);
     return false;
   }
-}
-
-async function queueDomainJobDelayed(leadId, company, maxRetries = 3) {
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    try {
-      const { domainQueue, areQueuesReady } = require('../utils/queue');
-      
-      if (areQueuesReady()) {
-        await domainQueue.add('findDomain', {
-          leadId: leadId,
-          company: company
-        });
-        
-        console.log(`🔄 DELAYED: Queued domain search for lead ${leadId}: ${company}`);
-        return true;
-      } else {
-        console.log(`⏳ DELAYED: Attempt ${attempt}/${maxRetries} - queues not ready for lead ${leadId}`);
-        await new Promise(resolve => setTimeout(resolve, 3000));
-      }
-    } catch (error) {
-      console.error(`❌ DELAYED: Queue error attempt ${attempt} for lead ${leadId}:`, error.message);
-      await new Promise(resolve => setTimeout(resolve, 3000));
-    }
-  }
-  
-  console.error(`❌ DELAYED: Failed to queue domain job for lead ${leadId} after ${maxRetries} attempts`);
-  return false;
 }
 
 // Bulletproof extract route
@@ -125,10 +97,10 @@ router.post('/extract', async (req, res) => {
           console.log(`✅ [${i + 1}] Success: ID ${leadId}`);
           insertedCount++;
           
-          // BULLETPROOF DOMAIN QUEUING
+          // BULLETPROOF DOMAIN QUEUING using getter
           const queued = await queueDomainJob(leadId, company);
           if (!queued) {
-            console.log(`⚠️ [${i + 1}] Domain queuing deferred for: ${company}`);
+            console.log(`⚠️ [${i + 1}] Could not queue domain job for: ${company}`);
           }
           
         } else {
