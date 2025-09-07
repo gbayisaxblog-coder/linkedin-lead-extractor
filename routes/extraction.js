@@ -2,43 +2,62 @@ const express = require('express');
 const { supabase } = require('../utils/database');
 const router = express.Router();
 
-// BULLETPROOF QUEUE ACCESS with retry logic
-async function queueDomainJob(leadId, company, retries = 5) {
-  for (let attempt = 1; attempt <= retries; attempt++) {
+// BULLETPROOF QUEUE ACCESS with readiness check
+async function queueDomainJob(leadId, company) {
+  try {
+    const { domainQueue, areQueuesReady } = require('../utils/queue');
+    
+    // Check if queues are ready
+    if (!areQueuesReady()) {
+      console.log(`⚠️ Queues not ready yet for lead ${leadId}, will queue in background`);
+      
+      // Queue the job for later processing
+      setTimeout(async () => {
+        console.log(`🔄 Retrying domain queue for lead ${leadId} after delay...`);
+        await queueDomainJobDelayed(leadId, company);
+      }, 5000);
+      
+      return true; // Return success to not block extraction
+    }
+    
+    await domainQueue.add('findDomain', {
+      leadId: leadId,
+      company: company
+    });
+    
+    console.log(`🔄 Queued domain search for lead ${leadId}: ${company}`);
+    return true;
+    
+  } catch (error) {
+    console.error(`❌ Queue error for lead ${leadId}:`, error.message);
+    return false;
+  }
+}
+
+async function queueDomainJobDelayed(leadId, company, maxRetries = 3) {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      // Get queue at runtime
-      const { domainQueue } = require('../utils/queue');
+      const { domainQueue, areQueuesReady } = require('../utils/queue');
       
-      if (!domainQueue) {
-        if (attempt < retries) {
-          console.log(`⏳ Domain queue not ready, attempt ${attempt}/${retries} - waiting...`);
-          await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2 seconds
-          continue;
-        } else {
-          console.log(`❌ Domain queue not available after ${retries} attempts for lead ${leadId}`);
-          return false;
-        }
-      }
-      
-      await domainQueue.add('findDomain', {
-        leadId: leadId,
-        company: company
-      });
-      
-      console.log(`🔄 Queued domain search for lead ${leadId}: ${company}`);
-      return true;
-      
-    } catch (error) {
-      if (attempt < retries) {
-        console.log(`⚠️ Queue attempt ${attempt}/${retries} failed for lead ${leadId}, retrying...`);
-        await new Promise(resolve => setTimeout(resolve, 2000));
+      if (areQueuesReady()) {
+        await domainQueue.add('findDomain', {
+          leadId: leadId,
+          company: company
+        });
+        
+        console.log(`🔄 DELAYED: Queued domain search for lead ${leadId}: ${company}`);
+        return true;
       } else {
-        console.error(`❌ Final queue error for lead ${leadId}:`, error.message);
-        return false;
+        console.log(`⏳ DELAYED: Attempt ${attempt}/${maxRetries} - queues not ready for lead ${leadId}`);
+        await new Promise(resolve => setTimeout(resolve, 3000));
       }
+    } catch (error) {
+      console.error(`❌ DELAYED: Queue error attempt ${attempt} for lead ${leadId}:`, error.message);
+      await new Promise(resolve => setTimeout(resolve, 3000));
     }
   }
   
+  console.error(`❌ DELAYED: Failed to queue domain job for lead ${leadId} after ${maxRetries} attempts`);
   return false;
 }
 
@@ -57,7 +76,6 @@ router.post('/extract', async (req, res) => {
     
     let insertedCount = 0;
     let skippedCount = 0;
-    const queuedJobs = []; // Track queuing for batch processing
     
     for (let i = 0; i < leads.length; i++) {
       const lead = leads[i];
@@ -107,8 +125,11 @@ router.post('/extract', async (req, res) => {
           console.log(`✅ [${i + 1}] Success: ID ${leadId}`);
           insertedCount++;
           
-          // Store for batch queuing after all insertions
-          queuedJobs.push({ leadId, company });
+          // BULLETPROOF DOMAIN QUEUING
+          const queued = await queueDomainJob(leadId, company);
+          if (!queued) {
+            console.log(`⚠️ [${i + 1}] Domain queuing deferred for: ${company}`);
+          }
           
         } else {
           console.log(`🔄 [${i + 1}] No data returned`);
@@ -125,19 +146,6 @@ router.post('/extract', async (req, res) => {
     console.log(`✅ Inserted: ${insertedCount}`);
     console.log(`🔄 Skipped: ${skippedCount}`);
     console.log('===============');
-    
-    // BATCH QUEUE DOMAIN JOBS AFTER ALL INSERTIONS
-    if (queuedJobs.length > 0) {
-      console.log(`🔄 Starting batch domain queuing for ${queuedJobs.length} leads...`);
-      
-      let queuedCount = 0;
-      for (const job of queuedJobs) {
-        const queued = await queueDomainJob(job.leadId, job.company);
-        if (queued) queuedCount++;
-      }
-      
-      console.log(`✅ Batch queuing complete: ${queuedCount}/${queuedJobs.length} domain jobs queued`);
-    }
     
     res.json({
       success: true,

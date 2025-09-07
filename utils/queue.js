@@ -4,6 +4,7 @@ const Redis = require('redis');
 let redisClient;
 let domainQueue;
 let ceoQueue;
+let queuesReady = false;
 
 async function initializeQueues() {
   try {
@@ -17,13 +18,17 @@ async function initializeQueues() {
     console.log('✅ Redis connected successfully');
     
     // Create queues
+    console.log('🔧 Creating domain queue...');
     domainQueue = new Queue('domain-finding', {
       connection: redisClient
     });
+    console.log('✅ Domain queue created:', !!domainQueue);
     
+    console.log('🔧 Creating CEO queue...');
     ceoQueue = new Queue('ceo-finding', {
       connection: redisClient
     });
+    console.log('✅ CEO queue created:', !!ceoQueue);
     
     // Set up workers
     console.log('🔧 Setting up queue workers...');
@@ -47,6 +52,16 @@ async function initializeQueues() {
     });
     
     console.log('✅ Workers set up successfully');
+    
+    // Mark queues as ready
+    queuesReady = true;
+    console.log('✅ Queues marked as ready');
+    
+    // Debug: Test queue access
+    console.log('🔍 Debug - domainQueue available:', !!domainQueue);
+    console.log('🔍 Debug - ceoQueue available:', !!ceoQueue);
+    console.log('🔍 Debug - queuesReady flag:', queuesReady);
+    
     console.log('✅ Queues initialized successfully');
     
   } catch (error) {
@@ -55,9 +70,17 @@ async function initializeQueues() {
   }
 }
 
+// Export function to check if queues are ready
+function areQueuesReady() {
+  const ready = queuesReady && !!domainQueue && !!ceoQueue;
+  console.log(`🔍 Queue readiness check: ${ready} (flag: ${queuesReady}, domainQueue: ${!!domainQueue}, ceoQueue: ${!!ceoQueue})`);
+  return ready;
+}
+
 module.exports = {
   initializeQueues,
   domainQueue,
   ceoQueue,
-  redisClient
+  redisClient,
+  areQueuesReady
 };
