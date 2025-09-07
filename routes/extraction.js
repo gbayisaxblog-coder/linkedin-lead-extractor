@@ -1,8 +1,9 @@
 const express = require('express');
 const { supabase } = require('../utils/database');
+const { domainQueue } = require('../utils/queue'); // ✅ ADD THIS LINE
 const router = express.Router();
 
-// Bulletproof extract route
+// Bulletproof extract route (FIXED - add domain queuing)
 router.post('/extract', async (req, res) => {
   console.log('=== EXTRACTION REQUEST ===');
   
@@ -62,8 +63,21 @@ router.post('/extract', async (req, res) => {
             skippedCount++;
           }
         } else if (data && data.length > 0) {
-          console.log(`✅ [${i + 1}] Success: ID ${data[0].id}`);
+          const leadId = data[0].id;
+          console.log(`✅ [${i + 1}] Success: ID ${leadId}`);
           insertedCount++;
+          
+          // ✅ ADD DOMAIN QUEUING HERE
+          try {
+            await domainQueue.add('findDomain', {
+              leadId: leadId,
+              company: company
+            });
+            console.log(`🔄 [${i + 1}] Queued domain search for: ${company}`);
+          } catch (queueError) {
+            console.error(`❌ [${i + 1}] Queue error:`, queueError.message);
+          }
+          
         } else {
           console.log(`🔄 [${i + 1}] No data returned`);
           skippedCount++;
@@ -93,14 +107,14 @@ router.post('/extract', async (req, res) => {
   }
 });
 
-// Get stats
+// Get stats (UPDATED to show domain progress)
 router.get('/status/:fileId', async (req, res) => {
   try {
     const { fileId } = req.params;
     
     const { data: leads, error } = await supabase
       .from('leads')
-      .select('status, ceo_name')
+      .select('status, domain, ceo_name') // ✅ ADD domain to select
       .eq('file_id', fileId);
     
     if (error) {
@@ -110,7 +124,10 @@ router.get('/status/:fileId', async (req, res) => {
     res.json({
       current_total: leads.length,
       pending: leads.filter(l => l.status === 'pending').length,
+      processing: leads.filter(l => l.status === 'processing').length, // ✅ ADD processing status
       completed: leads.filter(l => l.status === 'completed').length,
+      failed: leads.filter(l => l.status === 'failed').length, // ✅ ADD failed status
+      with_domain: leads.filter(l => l.domain).length, // ✅ ADD domain count
       with_ceo: leads.filter(l => l.ceo_name).length
     });
     
@@ -119,7 +136,7 @@ router.get('/status/:fileId', async (req, res) => {
   }
 });
 
-// Add this route to routes/extraction.js (before module.exports)
+// Check duplicates route (keep as is)
 router.post('/check-duplicates', async (req, res) => {
   try {
     const { leads } = req.body;
@@ -132,7 +149,6 @@ router.post('/check-duplicates', async (req, res) => {
     
     const duplicateResults = [];
     
-    // Check each lead individually for duplicates
     for (const lead of leads) {
       const fullName = String(lead.fullName || '').toLowerCase().trim();
       const company = String(lead.company || '').toLowerCase().trim();
