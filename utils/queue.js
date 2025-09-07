@@ -6,6 +6,9 @@ let domainQueue;
 let ceoQueue;
 let queuesReady = false;
 
+// Global queue registry to avoid module caching issues
+global.queueRegistry = global.queueRegistry || {};
+
 async function initializeQueues() {
   try {
     console.log('🔄 Initializing Redis and queues...');
@@ -30,12 +33,16 @@ async function initializeQueues() {
     
     console.log('✅ Queues created - domainQueue:', !!domainQueue, 'ceoQueue:', !!ceoQueue);
     
-    // ✅ CRITICAL: Re-export the queues after creation
+    // ✅ CRITICAL: Store in global registry AND re-export
+    global.queueRegistry.domainQueue = domainQueue;
+    global.queueRegistry.ceoQueue = ceoQueue;
+    global.queueRegistry.redisClient = redisClient;
+    
     module.exports.domainQueue = domainQueue;
     module.exports.ceoQueue = ceoQueue;
     module.exports.redisClient = redisClient;
     
-    console.log('✅ Queues re-exported to module.exports');
+    console.log('✅ Queues stored in global registry and re-exported');
     
     // Set up workers
     console.log('🔧 Setting up queue workers...');
@@ -52,7 +59,6 @@ async function initializeQueues() {
     // CEO worker
     new Worker('ceo-finding', async (job) => {
       console.log('👔 CEO worker processing job:', job.id);
-      // Placeholder for now
       return { success: true, message: 'CEO worker placeholder' };
     }, {
       connection: redisClient,
@@ -61,10 +67,8 @@ async function initializeQueues() {
     
     console.log('✅ Workers set up successfully');
     
-    // Mark queues as ready
     queuesReady = true;
     console.log('✅ Queues marked as ready');
-    
     console.log('✅ Queues initialized successfully');
     
   } catch (error) {
@@ -73,17 +77,21 @@ async function initializeQueues() {
   }
 }
 
-// Get current queue (always returns the latest instance)
+// Getter functions that use global registry
 function getDomainQueue() {
-  return domainQueue;
+  const queue = global.queueRegistry?.domainQueue || domainQueue;
+  console.log('🔍 getDomainQueue called, returning:', !!queue);
+  return queue;
 }
 
 function getCeoQueue() {
-  return ceoQueue;
+  return global.queueRegistry?.ceoQueue || ceoQueue;
 }
 
 function areQueuesReady() {
-  return queuesReady && !!domainQueue && !!ceoQueue;
+  const ready = queuesReady && !!(global.queueRegistry?.domainQueue || domainQueue);
+  console.log(`🔍 Queue readiness: ${ready} (flag: ${queuesReady}, global: ${!!global.queueRegistry?.domainQueue}, local: ${!!domainQueue})`);
+  return ready;
 }
 
 // Initial exports (will be updated after initialization)

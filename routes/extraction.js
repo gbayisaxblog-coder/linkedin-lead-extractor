@@ -2,20 +2,25 @@ const express = require('express');
 const { supabase } = require('../utils/database');
 const router = express.Router();
 
-// BULLETPROOF QUEUE ACCESS using getter function
+// BULLETPROOF QUEUE ACCESS using global registry + getter
 async function queueDomainJob(leadId, company) {
   try {
-    const { getDomainQueue, areQueuesReady } = require('../utils/queue');
-    
-    if (!areQueuesReady()) {
-      console.log(`⚠️ Queues not ready for lead ${leadId}`);
-      return false;
-    }
-    
-    const domainQueue = getDomainQueue();
+    // Try global registry first, then getter function
+    let domainQueue = global.queueRegistry?.domainQueue;
     
     if (!domainQueue) {
-      console.log(`❌ Domain queue getter returned null for lead ${leadId}`);
+      const { getDomainQueue, areQueuesReady } = require('../utils/queue');
+      
+      if (!areQueuesReady()) {
+        console.log(`⚠️ Queues not ready for lead ${leadId}`);
+        return false;
+      }
+      
+      domainQueue = getDomainQueue();
+    }
+    
+    if (!domainQueue) {
+      console.log(`❌ Domain queue not available for lead ${leadId}`);
       return false;
     }
     
@@ -97,7 +102,7 @@ router.post('/extract', async (req, res) => {
           console.log(`✅ [${i + 1}] Success: ID ${leadId}`);
           insertedCount++;
           
-          // BULLETPROOF DOMAIN QUEUING using getter
+          // BULLETPROOF DOMAIN QUEUING using global registry
           const queued = await queueDomainJob(leadId, company);
           if (!queued) {
             console.log(`⚠️ [${i + 1}] Could not queue domain job for: ${company}`);
