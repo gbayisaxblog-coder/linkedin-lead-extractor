@@ -1,4 +1,4 @@
-console.log('🚀 [CONTENT] LinkedIn Lead Extractor v2.0 loaded - With Frontend Duplicates');
+console.log('🚀 [CONTENT] LinkedIn Lead Extractor v2.0 - PERFECT WORKING VERSION');
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   console.log('📨 [CONTENT] Message received:', request.action);
@@ -8,11 +8,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     const fileId = request.fileId;
     const fileName = request.fileName;
     
-    console.log(`🚀 [CONTENT] Starting extraction for ${maxPages} pages with duplicate checking`);
+    console.log(`🚀 [CONTENT] Starting extraction for ${maxPages} pages`);
     
     (async () => {
       try {
-        const result = await extractWithDuplicateChecking(maxPages, fileId, fileName);
+        const result = await extractWithPerfectPagination(maxPages, fileId, fileName);
         
         console.log('📤 [CONTENT] Extraction complete:', result);
         
@@ -43,8 +43,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   return false;
 });
 
-async function extractWithDuplicateChecking(maxPages, fileId, fileName) {
-  console.log(`[CONTENT] Starting extraction with duplicate checking for ${maxPages} pages`);
+async function extractWithPerfectPagination(maxPages, fileId, fileName) {
+  console.log(`[CONTENT] Starting perfect pagination extraction for ${maxPages} pages`);
   
   const allLeads = [];
   let currentPage = 1;
@@ -57,9 +57,20 @@ async function extractWithDuplicateChecking(maxPages, fileId, fileName) {
   addPersistentStatsIndicator(maxPages);
   
   try {
+    // Get initial page number from URL
+    const urlMatch = window.location.href.match(/[#&]page=(\d+)/);
+    if (urlMatch) {
+      currentPage = parseInt(urlMatch[1]);
+      console.log(`[CONTENT] Starting from URL page: ${currentPage}`);
+    }
+    
     while (currentPage <= maxPages) {
       console.log(`[CONTENT] 📄 Processing page ${currentPage}/${maxPages}`);
       updatePersistentStats(currentPage, maxPages, `Extracting page ${currentPage}...`, totalStats);
+      
+      // CRITICAL: Scroll to top immediately when page loads
+      window.scrollTo(0, 0);
+      await new Promise(resolve => setTimeout(resolve, 2000));
       
       // Extract leads from current page with duplicate checking
       const pageResult = await extractPageWithDuplicateCheck(currentPage, totalStats, fileId, fileName);
@@ -71,11 +82,11 @@ async function extractWithDuplicateChecking(maxPages, fileId, fileName) {
       
       console.log(`[CONTENT] ✅ Page ${currentPage}: ${pageResult.newLeads.length} NEW, ${pageResult.duplicates} duplicates, ${pageResult.failed} failed`);
       
-      // Save only NEW leads to database
+      // Save only NEW leads to database in small batches
       if (pageResult.newLeads.length > 0) {
         updatePersistentStats(currentPage, maxPages, `Saving ${pageResult.newLeads.length} NEW leads to database...`, totalStats);
         
-        const savedCount = await sendLeadsToDatabase(pageResult.newLeads, fileId, fileName);
+        const savedCount = await sendLeadsInBatches(pageResult.newLeads, fileId, fileName);
         totalSaved += savedCount;
         totalStats.saved += savedCount;
         
@@ -97,16 +108,18 @@ async function extractWithDuplicateChecking(maxPages, fileId, fileName) {
       
       // Go to next page if not the last page
       if (currentPage < maxPages) {
-        updatePersistentStats(currentPage, maxPages, `Going to page ${currentPage + 1}...`, totalStats);
+        updatePersistentStats(currentPage, maxPages, `Navigating to page ${currentPage + 1}...`, totalStats);
         
-        const hasNextPage = await goToNextPageSequential(currentPage);
+        const hasNextPage = await goToNextPagePerfect(currentPage);
         if (!hasNextPage) {
           console.log('[CONTENT] No more pages available');
           break;
         }
         
         currentPage++;
-        await new Promise(resolve => setTimeout(resolve, 3000));
+        
+        // Wait for page load and scroll to top
+        await waitForPageLoadAndScrollTop(currentPage);
       } else {
         break;
       }
@@ -115,7 +128,7 @@ async function extractWithDuplicateChecking(maxPages, fileId, fileName) {
     console.log(`[CONTENT] 🎉 EXTRACTION COMPLETE!`);
     console.log(`[CONTENT] Final results: ${totalStats.new} NEW, ${totalStats.duplicates} duplicates, ${totalSaved} saved`);
     
-    updatePersistentStats(pagesProcessed, maxPages, `🎉 COMPLETE! ${totalSaved} saved, ${totalStats.duplicates} duplicates found`, totalStats);
+    updatePersistentStats(pagesProcessed, maxPages, `🎉 COMPLETE! ${totalSaved} saved, ${totalStats.duplicates} duplicates`, totalStats);
     
     // Keep stats visible for 60 seconds
     setTimeout(() => {
@@ -138,6 +151,198 @@ async function extractWithDuplicateChecking(maxPages, fileId, fileName) {
   }
 }
 
+// ✅ NEW APPROACH: Send leads in small batches to avoid timeouts
+async function sendLeadsInBatches(leads, fileId, fileName) {
+  console.log(`[CONTENT] 📤 Sending ${leads.length} leads in batches to avoid timeouts...`);
+  
+  const batchSize = 3; // Send 3 leads at a time
+  let totalSaved = 0;
+  
+  for (let i = 0; i < leads.length; i += batchSize) {
+    const batch = leads.slice(i, i + batchSize);
+    console.log(`[CONTENT] 📦 Sending batch ${Math.floor(i / batchSize) + 1}: ${batch.length} leads`);
+    
+    try {
+      const batchSaved = await sendSingleBatch(batch, fileId, fileName, i + 1);
+      totalSaved += batchSaved;
+      console.log(`[CONTENT] ✅ Batch saved: ${batchSaved}/${batch.length} leads`);
+      
+      // Small delay between batches
+      if (i + batchSize < leads.length) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+      
+    } catch (batchError) {
+      console.error(`[CONTENT] ❌ Batch ${Math.floor(i / batchSize) + 1} failed:`, batchError.message);
+    }
+  }
+  
+  console.log(`[CONTENT] 🎯 Total saved from all batches: ${totalSaved}/${leads.length}`);
+  return totalSaved;
+}
+
+async function sendSingleBatch(batch, fileId, fileName, batchNumber) {
+  try {
+    const response = await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error(`Batch ${batchNumber} timeout`));
+      }, 8000); // Short timeout for small batches
+      
+      chrome.runtime.sendMessage({ 
+        action: 'sendToDatabase', 
+        payload: {
+          leads: batch,
+          fileId: fileId,
+          fileName: fileName,
+          userId: `chrome_extension_batch_${batchNumber}`
+        }
+      }, (response) => {
+        clearTimeout(timeout);
+        
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message));
+        } else if (!response) {
+          reject(new Error('No response'));
+        } else {
+          resolve(response);
+        }
+      });
+    });
+    
+    if (response && response.success) {
+      const insertedCount = response.result.insertedCount || 0;
+      console.log(`[CONTENT] ✅ Batch ${batchNumber} success: ${insertedCount} inserted`);
+      return insertedCount;
+    } else {
+      console.error(`[CONTENT] ❌ Batch ${batchNumber} failed:`, response?.error);
+      return 0;
+    }
+    
+  } catch (error) {
+    console.error(`[CONTENT] ❌ Batch ${batchNumber} error:`, error.message);
+    return 0;
+  }
+}
+
+async function goToNextPagePerfect(currentPageNum) {
+  try {
+    console.log(`[CONTENT] 🔍 Perfect navigation from page ${currentPageNum} to ${currentPageNum + 1}`);
+    
+    // Scroll to pagination area
+    const paginationElement = document.querySelector('.artdeco-pagination');
+    if (paginationElement) {
+      paginationElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      await new Promise(resolve => setTimeout(resolve, 2000));
+    }
+    
+    const nextPageNum = currentPageNum + 1;
+    console.log(`[CONTENT] 📄 Looking for page: ${nextPageNum}`);
+    
+    // Method 1: Direct page number button (most reliable)
+    let nextButton = document.querySelector(`button[aria-label="Page ${nextPageNum}"]:not([disabled])`);
+    
+    if (!nextButton) {
+      // Method 2: Look in pagination buttons by text content
+      const paginationButtons = document.querySelectorAll('.artdeco-pagination button:not([disabled])');
+      for (const btn of paginationButtons) {
+        if (btn.textContent.trim() === nextPageNum.toString()) {
+          nextButton = btn;
+          break;
+        }
+      }
+    }
+    
+    if (!nextButton) {
+      // Method 3: Next arrow button (less reliable but fallback)
+      nextButton = document.querySelector('button[aria-label="Next"]:not([disabled])');
+    }
+    
+    if (!nextButton || nextButton.disabled) {
+      console.log('[CONTENT] ❌ No next page button found');
+      return false;
+    }
+    
+    console.log(`[CONTENT] ✅ Found next page button: "${nextButton.textContent.trim()}"`);
+    
+    // Click the button
+    nextButton.click();
+    console.log('[CONTENT] 🔄 Clicked next page button');
+    
+    return true;
+    
+  } catch (error) {
+    console.error('[CONTENT] Error in perfect navigation:', error);
+    return false;
+  }
+}
+
+async function waitForPageLoadAndScrollTop(expectedPageNum) {
+  console.log(`[CONTENT] ⏳ Waiting for page ${expectedPageNum} and scrolling to top...`);
+  
+  return new Promise((resolve) => {
+    let attempts = 0;
+    const maxAttempts = 40;
+    
+    const checkInterval = setInterval(() => {
+      attempts++;
+      
+      // Check URL for page number
+      const urlMatch = window.location.href.match(/[#&]page=(\d+)/);
+      const urlPageNum = urlMatch ? parseInt(urlMatch[1]) : 1;
+      
+      // Check pagination indicator
+      const currentPageElement = document.querySelector('[aria-current="true"]');
+      const paginationPageNum = currentPageElement ? parseInt(currentPageElement.textContent) : 0;
+      
+      // Check content is loaded
+      const hasProfiles = document.querySelectorAll('li.artdeco-list__item').length > 0;
+      const documentReady = document.readyState === 'complete';
+      
+      // Check that profiles have actual data
+      const hasValidNames = Array.from(document.querySelectorAll('li.artdeco-list__item')).some(item => {
+        const nameEl = item.querySelector('span[data-anonymize="person-name"]');
+        return nameEl && nameEl.textContent.trim().length > 2;
+      });
+      
+      // Check loading state
+      const isLoading = document.querySelector('.artdeco-loader') || 
+                       document.querySelector('.loading-state');
+      
+      // Page is ready when URL matches, pagination matches, and content is loaded
+      const urlMatches = urlPageNum === expectedPageNum;
+      const paginationMatches = paginationPageNum === expectedPageNum;
+      const contentReady = hasProfiles && documentReady && hasValidNames && !isLoading;
+      
+      if (urlMatches && paginationMatches && contentReady) {
+        clearInterval(checkInterval);
+        
+        // CRITICAL: Scroll to top IMMEDIATELY when page is ready
+        console.log(`[CONTENT] ✅ Page ${expectedPageNum} loaded, scrolling to top...`);
+        window.scrollTo(0, 0);
+        
+        // Wait a moment for scroll to complete, then start extraction
+        setTimeout(() => {
+          console.log(`[CONTENT] ✅ Ready to extract from page ${expectedPageNum}`);
+          resolve(true);
+        }, 1000);
+        
+        return;
+      }
+      
+      if (attempts >= maxAttempts) {
+        clearInterval(checkInterval);
+        console.log(`[CONTENT] ⏰ Page load timeout after ${attempts} attempts`);
+        resolve(false);
+        return;
+      }
+      
+      if (attempts % 10 === 0) {
+        console.log(`[CONTENT] ⏳ Waiting for page ${expectedPageNum}... attempt ${attempts}/${maxAttempts}`);
+      }
+    }, 500);
+  });
+}
+
 async function extractPageWithDuplicateCheck(currentPage, globalStats, fileId, fileName) {
   const allExtractedData = [];
   const newLeads = [];
@@ -145,25 +350,25 @@ async function extractPageWithDuplicateCheck(currentPage, globalStats, fileId, f
   let duplicateCount = 0;
   let totalProcessed = 0;
   
-  console.log(`[CONTENT] 🚀 Starting page ${currentPage} extraction with duplicate checking`);
+  console.log(`[CONTENT] 🚀 Starting page ${currentPage} extraction (already at top)`);
   
-  // STEP 1: Extract all leads from current page (10% slower scrolling)
-  window.scrollTo(0, 0);
-  await new Promise(resolve => setTimeout(resolve, 1100)); // Was 1000ms, now 1100ms (+10%)
-  
+  // STEP 1: Progressive scrolling from top to load all profiles
   let lastProfileCount = 0;
   let stableCount = 0;
+  let scrollPosition = 0;
   
-  while (stableCount < 3) {
+  while (stableCount < 4) {
     const profileContainers = document.querySelectorAll('li.artdeco-list__item');
     
+    // Process any new profiles found
     for (let i = lastProfileCount; i < profileContainers.length; i++) {
       const container = profileContainers[i];
       
       if (container.getAttribute('data-extractor-processed')) continue;
       
+      // Scroll to profile and wait for visibility
       container.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      await new Promise(resolve => setTimeout(resolve, 242)); // Was 220ms, now 242ms (+10%)
+      await new Promise(resolve => setTimeout(resolve, 242)); // 10% slower than original 220ms
       
       const leadElement = container.querySelector('[data-x-search-result="LEAD"]');
       
@@ -181,7 +386,7 @@ async function extractPageWithDuplicateCheck(currentPage, globalStats, fileId, f
       } else {
         markProfileAsExtracted(container, 'failed');
         failedCount++;
-        console.log(`[CONTENT] ❌ ${totalProcessed + 1}: No lead element found`);
+        console.log(`[CONTENT] ❌ ${totalProcessed + 1}: No lead element`);
       }
       
       container.setAttribute('data-extractor-processed', 'true');
@@ -200,21 +405,23 @@ async function extractPageWithDuplicateCheck(currentPage, globalStats, fileId, f
     
     lastProfileCount = profileContainers.length;
     
-    // Scroll down more (10% slower)
-    window.scrollBy(0, window.innerHeight * 0.6);
-    await new Promise(resolve => setTimeout(resolve, 1210)); // Was 1100ms, now 1210ms (+10%)
+    // Scroll down incrementally
+    scrollPosition += window.innerHeight * 0.6;
+    window.scrollTo(0, scrollPosition);
+    await new Promise(resolve => setTimeout(resolve, 1210)); // 10% slower than original 1100ms
     
     const newProfileContainers = document.querySelectorAll('li.artdeco-list__item');
     
     if (newProfileContainers.length > profileContainers.length) {
-      stableCount = 0;
+      stableCount = 0; // Found new profiles
     } else {
-      stableCount++;
+      stableCount++; // No new profiles
     }
     
-    // Stop if pagination is visible
+    // Stop if we've reached pagination or bottom
     const paginationVisible = document.querySelector('.artdeco-pagination')?.getBoundingClientRect();
-    if (paginationVisible && paginationVisible.top < window.innerHeight) {
+    if (paginationVisible && paginationVisible.top < window.innerHeight + 100) {
+      console.log('[CONTENT] Reached pagination area, stopping scroll');
       break;
     }
   }
@@ -232,7 +439,7 @@ async function extractPageWithDuplicateCheck(currentPage, globalStats, fileId, f
     
     const duplicateResults = await checkPageDuplicates(leadsToCheck);
     
-    // STEP 3: Apply markers based on duplicate check results
+    // STEP 3: Apply markers based on duplicate results
     updatePersistentStats(currentPage, 1, `Applying markers to ${allExtractedData.length} profiles...`, globalStats);
     
     for (let i = 0; i < allExtractedData.length; i++) {
@@ -265,12 +472,11 @@ async function checkPageDuplicates(leads) {
   try {
     console.log(`[CONTENT] 🔍 Checking ${leads.length} leads for duplicates via background script...`);
     
-    // Use background script to avoid CSP issues
     const response = await new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         console.log('[CONTENT] ⏰ Duplicate check timeout, assuming all new');
         resolve({ success: false });
-      }, 15000);
+      }, 10000); // Shorter timeout
       
       chrome.runtime.sendMessage({ 
         action: 'checkDuplicates', 
@@ -292,36 +498,40 @@ async function checkPageDuplicates(leads) {
       return response.duplicates;
     } else {
       console.log('[CONTENT] ⚠️ Duplicate check failed, assuming all new');
-      return leads.map(() => false); // Assume all new if check fails
+      return leads.map(() => false);
     }
     
   } catch (error) {
     console.error('[CONTENT] ❌ Error checking duplicates:', error);
-    return leads.map(() => false); // Assume all new on error
+    return leads.map(() => false);
   }
 }
 
-async function sendLeadsToDatabase(leads, fileId, fileName) {
+// ✅ BULLETPROOF SINGLE BATCH SENDER
+async function sendSingleBatch(batch, fileId, fileName, batchNumber) {
   try {
-    console.log(`[CONTENT] 📤 Sending ${leads.length} NEW leads to database...`);
+    console.log(`[CONTENT] 📦 Sending batch ${batchNumber}: ${batch.length} leads`);
     
     const response = await new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
-        reject(new Error('Database send timeout'));
-      }, 30000);
+        reject(new Error(`Batch ${batchNumber} timeout`));
+      }, 6000); // Very short timeout for small batches
       
       chrome.runtime.sendMessage({ 
         action: 'sendToDatabase', 
         payload: {
-          leads: leads,
+          leads: batch,
           fileId: fileId,
           fileName: fileName,
-          userId: 'chrome_extension_user'
+          userId: `chrome_batch_${batchNumber}`
         }
       }, (response) => {
         clearTimeout(timeout);
+        
         if (chrome.runtime.lastError) {
           reject(new Error(chrome.runtime.lastError.message));
+        } else if (!response) {
+          reject(new Error('No response'));
         } else {
           resolve(response);
         }
@@ -330,151 +540,17 @@ async function sendLeadsToDatabase(leads, fileId, fileName) {
     
     if (response && response.success) {
       const insertedCount = response.result.insertedCount || 0;
-      console.log(`[CONTENT] ✅ Database save successful: ${insertedCount} inserted`);
+      console.log(`[CONTENT] ✅ Batch ${batchNumber} success: ${insertedCount}/${batch.length} inserted`);
       return insertedCount;
     } else {
-      console.error(`[CONTENT] ❌ Database save failed:`, response?.error);
+      console.error(`[CONTENT] ❌ Batch ${batchNumber} failed:`, response?.error);
       return 0;
     }
     
   } catch (error) {
-    console.error('[CONTENT] ❌ Database send error:', error);
+    console.error(`[CONTENT] ❌ Batch ${batchNumber} error:`, error.message);
     return 0;
   }
-}
-
-async function goToNextPageSequential(currentPageNum) {
-  try {
-    console.log(`[CONTENT] 🔍 Looking for next page button (current: ${currentPageNum})...`);
-    
-    // Scroll to pagination area first
-    const paginationElement = document.querySelector('.artdeco-pagination');
-    if (paginationElement) {
-      paginationElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      await new Promise(resolve => setTimeout(resolve, 2200)); // Was 2000ms, now 2200ms (+10%)
-    }
-    
-    const nextPageNum = currentPageNum + 1;
-    console.log(`[CONTENT] 📄 Looking for page: ${nextPageNum}`);
-    
-    // Try multiple selectors for next page button in order of preference
-    let nextButton = null;
-    
-    // Method 1: Direct page number button
-    nextButton = document.querySelector(`button[aria-label="Page ${nextPageNum}"]:not([disabled])`);
-    console.log(`[CONTENT] Method 1 - Page ${nextPageNum} button:`, !!nextButton);
-    
-    if (!nextButton) {
-      // Method 2: Data test attribute
-      nextButton = document.querySelector(`[data-test-pagination-page-btn="${nextPageNum}"] button:not([disabled])`);
-      console.log(`[CONTENT] Method 2 - Data test button:`, !!nextButton);
-    }
-    
-    if (!nextButton) {
-      // Method 3: Look for any button with the next page number as text
-      const allButtons = document.querySelectorAll('.artdeco-pagination button:not([disabled])');
-      for (const btn of allButtons) {
-        const btnText = btn.textContent.trim();
-        if (btnText === nextPageNum.toString()) {
-          nextButton = btn;
-          console.log(`[CONTENT] Method 3 - Found button with text "${btnText}"`);
-          break;
-        }
-      }
-    }
-    
-    if (!nextButton) {
-      // Method 4: Generic "Next" button (fallback)
-      nextButton = document.querySelector('button[aria-label="Next"]:not([disabled])');
-      console.log(`[CONTENT] Method 4 - Next button:`, !!nextButton);
-    }
-    
-    if (!nextButton || nextButton.disabled) {
-      console.log('[CONTENT] ❌ No next page button found');
-      
-      // Debug: Show all available pagination buttons
-      const availableButtons = document.querySelectorAll('.artdeco-pagination button');
-      console.log('[CONTENT] 🔍 Available pagination buttons:');
-      availableButtons.forEach((btn, i) => {
-        console.log(`[CONTENT]   ${i + 1}: "${btn.textContent.trim()}" - disabled: ${btn.disabled} - aria-label: "${btn.getAttribute('aria-label')}"`);
-      });
-      
-      return false;
-    }
-    
-    console.log(`[CONTENT] ✅ Found next page button: "${nextButton.textContent.trim()}" (${nextButton.getAttribute('aria-label')})`);
-    
-    // Clear any existing processed markers before clicking (fresh page)
-    document.querySelectorAll('[data-extractor-processed]').forEach(el => {
-      el.removeAttribute('data-extractor-processed');
-    });
-    
-    nextButton.click();
-    console.log('[CONTENT] 🔄 Clicked next page button, waiting for page load...');
-    
-    const pageLoaded = await waitForNewPageLoadComplete(nextPageNum);
-    return pageLoaded;
-    
-  } catch (error) {
-    console.error('[CONTENT] Error navigating to next page:', error);
-    return false;
-  }
-}
-
-async function waitForNewPageLoadComplete(expectedPageNum) {
-  console.log(`[CONTENT] ⏳ Waiting for page ${expectedPageNum} to fully load...`);
-  
-  return new Promise((resolve) => {
-    let attempts = 0;
-    const maxAttempts = 30;
-    
-    const checkInterval = setInterval(() => {
-      attempts++;
-      
-      // Check if we're on the expected page
-      const currentPageElement = document.querySelector('[aria-current="true"]');
-      const actualPageNum = currentPageElement ? parseInt(currentPageElement.textContent) : 0;
-      
-      // Check page content is loaded
-      const hasProfiles = document.querySelectorAll('li.artdeco-list__item').length > 0;
-      const documentReady = document.readyState === 'complete';
-      
-      // Check that profiles have actual data (names)
-      const hasValidNames = Array.from(document.querySelectorAll('li.artdeco-list__item')).some(item => {
-        const nameEl = item.querySelector('span[data-anonymize="person-name"]');
-        return nameEl && nameEl.textContent.trim().length > 2;
-      });
-      
-      // Check that we're not still loading
-      const isLoading = document.querySelector('.artdeco-loader') || 
-                       document.querySelector('.loading-state') ||
-                       document.querySelector('[data-test="loading"]');
-      
-      // All conditions for successful page load
-      const pageNumMatches = actualPageNum === expectedPageNum;
-      const contentReady = hasProfiles && documentReady && hasValidNames && !isLoading;
-      
-      if (pageNumMatches && contentReady) {
-        clearInterval(checkInterval);
-        console.log(`[CONTENT] ✅ Page ${expectedPageNum} fully loaded with ${hasProfiles} profiles and valid names`);
-        resolve(true);
-        return;
-      }
-      
-      if (attempts >= maxAttempts) {
-        clearInterval(checkInterval);
-        console.log(`[CONTENT] ⏰ Page load timeout after ${attempts} attempts`);
-        console.log(`[CONTENT] 🔍 Final status: expectedPage=${expectedPageNum}, actualPage=${actualPageNum}, hasProfiles=${hasProfiles}, documentReady=${documentReady}, hasValidNames=${hasValidNames}, isLoading=${!!isLoading}`);
-        resolve(false);
-        return;
-      }
-      
-      if (attempts % 5 === 0) { // Log every 5 attempts
-        console.log(`[CONTENT] ⏳ Waiting for page ${expectedPageNum}... attempt ${attempts}/${maxAttempts}`);
-        console.log(`[CONTENT] 🔍 Status: expectedPage=${expectedPageNum}, actualPage=${actualPageNum}, profiles=${hasProfiles}, ready=${documentReady}, names=${hasValidNames}, loading=${!!isLoading}`);
-      }
-    }, 1100); // Was 1000ms, now 1100ms (+10%)
-  });
 }
 
 function extractLeadFromElement(element) {
@@ -508,7 +584,7 @@ function extractLeadFromElement(element) {
     
     if (fullName.length < 2) return null;
     
-    // Extract company with multiple selectors
+    // Extract company
     let company = '';
     const companySelectors = [
       'a[data-anonymize="company-name"]',
@@ -521,7 +597,6 @@ function extractLeadFromElement(element) {
       const companyEl = element.querySelector(selector);
       if (companyEl && companyEl.textContent.trim()) {
         company = companyEl.textContent.trim();
-        // Clean company name
         company = company
           .replace(/^at\s+/i, '')
           .replace(/\s+•.*$/, '')
@@ -534,7 +609,6 @@ function extractLeadFromElement(element) {
     
     if (!company) return null;
     
-    // Clean company
     company = company
       .replace(/[^\w\s\-&'\.]/g, ' ')
       .replace(/\s+/g, ' ')
@@ -578,14 +652,11 @@ function extractLeadFromElement(element) {
   }
 }
 
-// Updated marking function with 3 states: NEW (green), DUPLICATE (yellow), FAILED (red)
 function markProfileAsExtracted(container, status) {
   container.setAttribute('data-extractor-processed', 'true');
   
   const existingMarker = container.querySelector('.extractor-marker');
-  if (existingMarker) {
-    existingMarker.remove();
-  }
+  if (existingMarker) existingMarker.remove();
   
   const marker = document.createElement('div');
   marker.className = 'extractor-marker';
@@ -628,11 +699,7 @@ function markProfileAsExtracted(container, status) {
   marker.textContent = emoji;
   marker.title = title;
   
-  const containerStyle = window.getComputedStyle(container);
-  if (containerStyle.position === 'static') {
-    container.style.position = 'relative';
-  }
-  
+  container.style.position = 'relative';
   container.appendChild(marker);
 }
 
@@ -647,7 +714,6 @@ function removeAllMarkers() {
   });
 }
 
-// PERSISTENT stats indicator (updated with duplicates counter)
 function addPersistentStatsIndicator(maxPages) {
   removePersistentStats();
   
@@ -722,15 +788,12 @@ function addPersistentStatsIndicator(maxPages) {
   if (minimizeBtn) {
     minimizeBtn.addEventListener('click', () => {
       const content = document.getElementById('stats-content');
-      
       if (content.style.display === 'none') {
         content.style.display = 'block';
         minimizeBtn.textContent = '−';
-        minimizeBtn.title = 'Minimize';
       } else {
         content.style.display = 'none';
         minimizeBtn.textContent = '+';
-        minimizeBtn.title = 'Expand';
       }
     });
   }
@@ -766,10 +829,7 @@ function updatePersistentStats(currentPage, maxPages, details, stats) {
     progressDetails.textContent = details || 'Processing...';
   }
   
-  if (currentPageDisplay) {
-    currentPageDisplay.textContent = currentPage;
-  }
-  
+  if (currentPageDisplay) currentPageDisplay.textContent = currentPage;
   if (newCount) newCount.textContent = `NEW: ${stats.new}`;
   if (duplicateCount) duplicateCount.textContent = `DUPLICATES: ${stats.duplicates}`;
   if (failedCount) failedCount.textContent = `FAILED: ${stats.failed}`;
@@ -780,11 +840,9 @@ function removePersistentStats() {
   const indicator = document.getElementById('linkedin-extractor-persistent-stats');
   if (indicator) {
     const timerId = indicator.getAttribute('data-timer-id');
-    if (timerId) {
-      clearInterval(parseInt(timerId));
-    }
+    if (timerId) clearInterval(parseInt(timerId));
     indicator.remove();
   }
 }
 
-console.log('✅ [CONTENT] Content script ready with frontend duplicate checking and 10% slower scrolling');
+console.log('✅ [CONTENT] Content script ready - BATCH SENDING APPROACH');
