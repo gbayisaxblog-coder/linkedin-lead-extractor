@@ -1,4 +1,4 @@
-// utils/queue.js - COMPLETE FIXED VERSION
+// utils/queue.js - COMPLETE WORKING VERSION
 const { Queue, Worker } = require('bullmq');
 const Redis = require('ioredis');
 
@@ -19,7 +19,8 @@ async function initializeQueues() {
       lazyConnect: true
     });
     
-    console.log('✅ Redis connected');
+    await redisConnection.ping();
+    console.log('✅ Redis connected and responding');
     
     // Create queues
     domainQueue = new Queue('domain-finding', {
@@ -63,6 +64,10 @@ async function initializeQueues() {
     
     console.log('✅ All queues initialized successfully');
     
+    // Test queue by adding a test job
+    await domainQueue.add('test-connection', { test: true }, { removeOnComplete: 1 });
+    console.log('✅ Queue test job added successfully');
+    
   } catch (error) {
     console.error('❌ Queue initialization error:', error);
     throw error;
@@ -74,56 +79,75 @@ async function startWorkers() {
     console.log('🔄 Starting queue workers...');
     
     // Domain finding worker
-    const domainWorker = new Worker('domain-finding', require('../workers/domainWorker'), {
+    const domainWorker = new Worker('domain-finding', async (job) => {
+      if (job.name === 'test-connection') {
+        console.log('✅ Queue test job processed successfully');
+        return { success: true, test: true };
+      }
+      
+      // Process real domain finding jobs
+      return require('../workers/domainWorker')(job);
+    }, {
       connection: redisConnection,
-      concurrency: 5,
+      concurrency: 3, // Reduced concurrency for better reliability
       limiter: {
-        max: 10,
-        duration: 60000 // 10 jobs per minute
+        max: 5, // 5 jobs per minute for BrightData rate limits
+        duration: 60000
       }
     });
     
-    domainWorker.on('completed', (job) => {
-      console.log(`✅ Domain job ${job.id} completed`);
+    domainWorker.on('completed', (job, result) => {
+      if (job.name !== 'test-connection') {
+        console.log(`✅ Domain job ${job.id} completed for company: ${job.data.company}`);
+      }
     });
     
     domainWorker.on('failed', (job, err) => {
-      console.error(`❌ Domain job ${job.id} failed:`, err.message);
+      console.error(`❌ Domain job ${job?.id} failed:`, err.message);
+    });
+    
+    domainWorker.on('error', (err) => {
+      console.error('❌ Domain worker error:', err);
     });
     
     // CEO finding worker
     const ceoWorker = new Worker('ceo-finding', require('../workers/ceoWorker'), {
       connection: redisConnection,
-      concurrency: 3,
+      concurrency: 2, // Reduced concurrency for better reliability
       limiter: {
-        max: 6,
-        duration: 60000 // 6 jobs per minute
+        max: 3, // 3 jobs per minute for OpenAI rate limits
+        duration: 60000
       }
     });
     
-    ceoWorker.on('completed', (job) => {
-      console.log(`✅ CEO job ${job.id} completed`);
+    ceoWorker.on('completed', (job, result) => {
+      console.log(`✅ CEO job ${job.id} completed for company: ${job.data.company}`);
     });
     
     ceoWorker.on('failed', (job, err) => {
-      console.error(`❌ CEO job ${job.id} failed:`, err.message);
+      console.error(`❌ CEO job ${job?.id} failed:`, err.message);
+    });
+    
+    ceoWorker.on('error', (err) => {
+      console.error('❌ CEO worker error:', err);
     });
     
     // Email finding worker
     const emailWorker = new Worker('email-finding', require('../workers/emailWorker'), {
       connection: redisConnection,
-      concurrency: 10
+      concurrency: 5
     });
     
-    emailWorker.on('completed', (job) => {
+    emailWorker.on('completed', (job, result) => {
       console.log(`✅ Email job ${job.id} completed`);
     });
     
     emailWorker.on('failed', (job, err) => {
-      console.error(`❌ Email job ${job.id} failed:`, err.message);
+      console.error(`❌ Email job ${job?.id} failed:`, err.message);
     });
     
     console.log('✅ All workers started successfully');
+    console.log('🔄 Workers are now processing jobs...');
     
     return { domainWorker, ceoWorker, emailWorker };
     
@@ -133,9 +157,42 @@ async function startWorkers() {
   }
 }
 
+// Add queue monitoring functions
+async function getQueueStats() {
+  try {
+    if (!domainQueue || !ceoQueue) {
+      return { error: 'Queues not initialized' };
+    }
+    
+    const domainStats = {
+      waiting: await domainQueue.getWaiting().then(jobs => jobs.length),
+      active: await domainQueue.getActive().then(jobs => jobs.length),
+      completed: await domainQueue.getCompleted().then(jobs => jobs.length),
+      failed: await domainQueue.getFailed().then(jobs => jobs.length)
+    };
+    
+    const ceoStats = {
+      waiting: await ceoQueue.getWaiting().then(jobs => jobs.length),
+      active: await ceoQueue.getActive().then(jobs => jobs.length),
+      completed: await ceoQueue.getCompleted().then(jobs => jobs.length),
+      failed: await ceoQueue.getFailed().then(jobs => jobs.length)
+    };
+    
+    return {
+      domain: domainStats,
+      ceo: ceoStats,
+      timestamp: new Date().toISOString()
+    };
+  } catch (error) {
+    console.error('❌ Error getting queue stats:', error);
+    return { error: error.message };
+  }
+}
+
 module.exports = {
   initializeQueues,
   startWorkers,
+  getQueueStats,
   domainQueue,
   ceoQueue,
   emailQueue,

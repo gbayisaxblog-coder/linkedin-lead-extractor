@@ -47,19 +47,25 @@ async function extractWithDuplicateChecking(maxPages, fileId, fileName) {
   console.log(`[CONTENT] Starting extraction with duplicate checking for ${maxPages} pages`);
   
   const allLeads = [];
-  let currentPage = 1;
-  let pagesProcessed = 0;
   let totalSaved = 0;
   let totalDuplicates = 0;
   let totalStats = { new: 0, duplicates: 0, failed: 0, processed: 0, saved: 0 };
   
+  // FIXED: Get the actual current page from the URL or pagination
+  let currentPage = getCurrentPageNumber();
+  const startingPage = currentPage;
+  const endingPage = currentPage + maxPages - 1;
+  let pagesProcessed = 0;
+  
+  console.log(`[CONTENT] 📍 Starting from page ${currentPage}, will extract ${maxPages} pages (${currentPage} to ${endingPage})`);
+  
   // Create persistent stats box
-  addPersistentStatsIndicator(maxPages);
+  addPersistentStatsIndicator(maxPages, startingPage, endingPage);
   
   try {
-    while (currentPage <= maxPages) {
-      console.log(`[CONTENT] 📄 Processing page ${currentPage}/${maxPages}`);
-      updatePersistentStats(currentPage, maxPages, `Extracting page ${currentPage}...`, totalStats);
+    for (let i = 0; i < maxPages; i++) {
+      console.log(`[CONTENT] 📄 Processing page ${currentPage} (${i + 1}/${maxPages})`);
+      updatePersistentStats(i + 1, maxPages, `Extracting page ${currentPage}...`, totalStats, currentPage);
       
       // Extract leads from current page with duplicate checking
       const pageResult = await extractPageWithDuplicateCheck(currentPage, totalStats, fileId, fileName);
@@ -73,18 +79,18 @@ async function extractWithDuplicateChecking(maxPages, fileId, fileName) {
       
       // Save only NEW leads to database
       if (pageResult.newLeads.length > 0) {
-        updatePersistentStats(currentPage, maxPages, `Saving ${pageResult.newLeads.length} NEW leads to database...`, totalStats);
+        updatePersistentStats(i + 1, maxPages, `Saving ${pageResult.newLeads.length} NEW leads to database...`, totalStats, currentPage);
         
         const savedCount = await sendLeadsToDatabase(pageResult.newLeads, fileId, fileName);
         totalSaved += savedCount;
         totalStats.saved += savedCount;
         
         console.log(`[CONTENT] 💾 Saved ${savedCount}/${pageResult.newLeads.length} NEW leads from page ${currentPage}`);
-        updatePersistentStats(currentPage, maxPages, `✅ Verified ${savedCount} leads saved to database`, totalStats);
+        updatePersistentStats(i + 1, maxPages, `✅ Verified ${savedCount} leads saved to database`, totalStats, currentPage);
       }
       
       allLeads.push(...pageResult.newLeads);
-      pagesProcessed = currentPage;
+      pagesProcessed = i + 1;
       totalDuplicates += pageResult.duplicates;
       
       // Update total stats
@@ -93,11 +99,12 @@ async function extractWithDuplicateChecking(maxPages, fileId, fileName) {
       totalStats.failed += pageResult.failed;
       totalStats.processed += pageResult.totalProcessed;
       
-      updatePersistentStats(currentPage, maxPages, `Page ${currentPage} complete - ${totalStats.saved} total saved`, totalStats);
+      updatePersistentStats(i + 1, maxPages, `Page ${currentPage} complete - ${totalStats.saved} total saved`, totalStats, currentPage);
       
       // Go to next page if not the last page
-      if (currentPage < maxPages) {
-        updatePersistentStats(currentPage, maxPages, `Going to page ${currentPage + 1}...`, totalStats);
+      if (i < maxPages - 1) {
+        const nextPageNum = currentPage + 1;
+        updatePersistentStats(i + 1, maxPages, `Going to page ${nextPageNum}...`, totalStats, currentPage);
         
         const hasNextPage = await goToNextPageSequential(currentPage);
         if (!hasNextPage) {
@@ -107,15 +114,13 @@ async function extractWithDuplicateChecking(maxPages, fileId, fileName) {
         
         currentPage++;
         await new Promise(resolve => setTimeout(resolve, 3000));
-      } else {
-        break;
       }
     }
     
     console.log(`[CONTENT] 🎉 EXTRACTION COMPLETE!`);
     console.log(`[CONTENT] Final results: ${totalStats.new} NEW, ${totalStats.duplicates} duplicates, ${totalSaved} saved`);
     
-    updatePersistentStats(pagesProcessed, maxPages, `🎉 COMPLETE! ${totalSaved} saved, ${totalStats.duplicates} duplicates found`, totalStats);
+    updatePersistentStats(pagesProcessed, maxPages, `🎉 COMPLETE! ${totalSaved} saved, ${totalStats.duplicates} duplicates found`, totalStats, currentPage);
     
     // Keep stats visible for 60 seconds
     setTimeout(() => {
@@ -135,6 +140,70 @@ async function extractWithDuplicateChecking(maxPages, fileId, fileName) {
     removeAllMarkers();
     removePersistentStats();
     throw error;
+  }
+}
+
+// NEW FUNCTION: Detect current page number from URL or pagination
+function getCurrentPageNumber() {
+  try {
+    // Method 1: Try to get from URL parameter
+    const urlParams = new URLSearchParams(window.location.search);
+    const pageFromUrl = urlParams.get('page');
+    if (pageFromUrl && !isNaN(parseInt(pageFromUrl))) {
+      const pageNum = parseInt(pageFromUrl);
+      console.log(`[CONTENT] 📍 Found page number in URL: ${pageNum}`);
+      return pageNum;
+    }
+    
+    // Method 2: Try to get from URL hash
+    const hashMatch = window.location.href.match(/[#&]page=(\d+)/);
+    if (hashMatch) {
+      const pageNum = parseInt(hashMatch[1]);
+      console.log(`[CONTENT] 📍 Found page number in URL hash: ${pageNum}`);
+      return pageNum;
+    }
+    
+    // Method 3: Try to get from pagination element with aria-current="true"
+    const currentPageElement = document.querySelector('.artdeco-pagination [aria-current="true"]');
+    if (currentPageElement) {
+      const pageNum = parseInt(currentPageElement.textContent.trim());
+      if (!isNaN(pageNum)) {
+        console.log(`[CONTENT] 📍 Found current page from pagination: ${pageNum}`);
+        return pageNum;
+      }
+    }
+    
+    // Method 4: Try to get from selected/active pagination button
+    const activePageButton = document.querySelector('.artdeco-pagination button.selected, .artdeco-pagination button.active');
+    if (activePageButton) {
+      const pageNum = parseInt(activePageButton.textContent.trim());
+      if (!isNaN(pageNum)) {
+        console.log(`[CONTENT] 📍 Found active page from button: ${pageNum}`);
+        return pageNum;
+      }
+    }
+    
+    // Method 5: Look for any pagination button that looks "current"
+    const paginationButtons = document.querySelectorAll('.artdeco-pagination button');
+    for (const button of paginationButtons) {
+      if (button.getAttribute('aria-current') === 'true' || 
+          button.classList.contains('selected') || 
+          button.classList.contains('active')) {
+        const pageNum = parseInt(button.textContent.trim());
+        if (!isNaN(pageNum)) {
+          console.log(`[CONTENT] 📍 Found current page from button attributes: ${pageNum}`);
+          return pageNum;
+        }
+      }
+    }
+    
+    // Fallback: Default to page 1
+    console.log(`[CONTENT] 📍 Could not detect current page, defaulting to page 1`);
+    return 1;
+    
+  } catch (error) {
+    console.error('[CONTENT] Error detecting current page:', error);
+    return 1;
   }
 }
 
@@ -195,7 +264,7 @@ async function extractPageWithDuplicateCheck(currentPage, globalStats, fileId, f
         processed: globalStats.processed + totalProcessed,
         saved: globalStats.saved
       };
-      updatePersistentStats(currentPage, 1, `Processing profile ${totalProcessed}...`, currentStats);
+      updatePersistentStats(1, 1, `Processing profile ${totalProcessed}...`, currentStats, currentPage);
     }
     
     lastProfileCount = profileContainers.length;
@@ -223,7 +292,7 @@ async function extractPageWithDuplicateCheck(currentPage, globalStats, fileId, f
   
   // STEP 2: Check duplicates for this page
   if (allExtractedData.length > 0) {
-    updatePersistentStats(currentPage, 1, `Checking ${allExtractedData.length} leads for duplicates...`, globalStats);
+    updatePersistentStats(1, 1, `Checking ${allExtractedData.length} leads for duplicates...`, globalStats, currentPage);
     
     const leadsToCheck = allExtractedData.map(item => ({
       fullName: item.lead.fullName,
@@ -233,7 +302,7 @@ async function extractPageWithDuplicateCheck(currentPage, globalStats, fileId, f
     const duplicateResults = await checkPageDuplicates(leadsToCheck);
     
     // STEP 3: Apply markers based on duplicate check results
-    updatePersistentStats(currentPage, 1, `Applying markers to ${allExtractedData.length} profiles...`, globalStats);
+    updatePersistentStats(1, 1, `Applying markers to ${allExtractedData.length} profiles...`, globalStats, currentPage);
     
     for (let i = 0; i < allExtractedData.length; i++) {
       const { lead, container, index } = allExtractedData[i];
@@ -647,9 +716,11 @@ function removeAllMarkers() {
   });
 }
 
-// PERSISTENT stats indicator (updated with duplicates counter)
-function addPersistentStatsIndicator(maxPages) {
+// PERSISTENT stats indicator (updated with actual page numbers)
+function addPersistentStatsIndicator(maxPages, startingPage = 1, endingPage = null) {
   removePersistentStats();
+  
+  const pageRange = endingPage ? `${startingPage}-${endingPage}` : `${startingPage}+`;
   
   const indicator = document.createElement('div');
   indicator.id = 'linkedin-extractor-persistent-stats';
@@ -708,7 +779,7 @@ function addPersistentStatsIndicator(maxPages) {
         <div style="border-top: 1px solid rgba(255,255,255,0.1); padding-top: 12px;">
           <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 12px;">
             <div>⏱️ <span id="extraction-time">00:00</span></div>
-            <div>📄 Page: <span id="current-page-display">1</span>/<span id="total-pages-display">${maxPages}</span></div>
+            <div>📄 Pages: <span id="page-range">${pageRange}</span> (<span id="current-progress">1</span>/${maxPages})</div>
           </div>
         </div>
       </div>
@@ -750,24 +821,25 @@ function addPersistentStatsIndicator(maxPages) {
   indicator.setAttribute('data-timer-id', timer);
 }
 
-function updatePersistentStats(currentPage, maxPages, details, stats) {
+function updatePersistentStats(currentProgress, maxPages, details, stats, actualPageNum = null) {
   const progressText = document.getElementById('progress-text');
   const progressBar = document.getElementById('progress-bar');
   const progressDetails = document.getElementById('progress-details');
-  const currentPageDisplay = document.getElementById('current-page-display');
+  const currentProgressDisplay = document.getElementById('current-progress');
   const newCount = document.getElementById('new-count');
   const duplicateCount = document.getElementById('duplicate-count');
   const failedCount = document.getElementById('failed-count');
   const savedCount = document.getElementById('saved-count');
   
   if (progressText && progressBar && progressDetails) {
-    progressText.textContent = `Page ${currentPage} of ${maxPages}`;
-    progressBar.style.width = `${(currentPage / maxPages) * 100}%`;
+    const displayText = actualPageNum ? `Page ${actualPageNum} (${currentProgress}/${maxPages})` : `Progress ${currentProgress}/${maxPages}`;
+    progressText.textContent = displayText;
+    progressBar.style.width = `${(currentProgress / maxPages) * 100}%`;
     progressDetails.textContent = details || 'Processing...';
   }
   
-  if (currentPageDisplay) {
-    currentPageDisplay.textContent = currentPage;
+  if (currentProgressDisplay) {
+    currentProgressDisplay.textContent = currentProgress;
   }
   
   if (newCount) newCount.textContent = `NEW: ${stats.new}`;
@@ -787,4 +859,4 @@ function removePersistentStats() {
   }
 }
 
-console.log('✅ [CONTENT] Content script ready with frontend duplicate checking and 10% slower scrolling');
+console.log('✅ [CONTENT] Content script ready with SMART page detection and sequential navigation');

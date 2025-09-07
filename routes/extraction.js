@@ -228,4 +228,63 @@ router.post('/check-duplicates', async (req, res) => {
   }
 });
 
+router.get('/queue-status', async (req, res) => {
+  try {
+    const { getQueueStats } = require('../utils/queue');
+    const stats = await getQueueStats();
+    
+    res.json({
+      success: true,
+      queues: stats,
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('❌ Queue status error:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message 
+    });
+  }
+});
+
+// Add manual queue trigger for testing
+router.post('/trigger-domain-finding', async (req, res) => {
+  try {
+    const { leadId, company } = req.body;
+    
+    if (!leadId || !company) {
+      return res.status(400).json({ error: 'leadId and company required' });
+    }
+    
+    const { domainQueue } = require('../utils/queue');
+    
+    if (!domainQueue) {
+      return res.status(500).json({ error: 'Domain queue not available' });
+    }
+    
+    await domainQueue.add('find-domain', {
+      leadId,
+      company,
+      userId: 'manual-trigger'
+    });
+    
+    console.log(`🎯 Manually queued domain job for lead ${leadId}: ${company}`);
+    
+    res.json({
+      success: true,
+      message: `Domain finding job queued for ${company}`,
+      leadId,
+      company
+    });
+    
+  } catch (error) {
+    console.error('❌ Manual trigger error:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message 
+    });
+  }
+});
+
 module.exports = router;

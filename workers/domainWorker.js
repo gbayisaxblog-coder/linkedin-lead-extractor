@@ -1,36 +1,41 @@
+// workers/domainWorker.js - FIXED VERSION
 const BrightDataService = require('../services/brightdata');
 const cache = require('../services/cache');
-const supabase = require('../utils/database');
-const { ceoQueue } = require('../utils/queue');
+const { supabase } = require('../utils/database');
 
 const brightData = new BrightDataService();
 
 module.exports = async function(job) {
   const { leadId, company, userId } = job.data;
   
-  console.log(`🌐 REAL Domain worker started for lead ${leadId}: ${company}`);
+  console.log(`🌐 Domain worker started for lead ${leadId}: ${company}`);
   
   try {
-    const cacheKey = `domain:${company.toLowerCase()}`;
+    // Update status to processing
+    await supabase
+      .from('leads')
+      .update({ status: 'processing' })
+      .eq('id', leadId);
+    
+    const cacheKey = `domain:${company.toLowerCase().replace(/[^a-z0-9]/g, '')}`;
     let domain = await cache.get(cacheKey);
     
     if (!domain) {
-      console.log(`🔍 Searching for REAL domain of: ${company}`);
+      console.log(`🔍 Searching for domain of: ${company}`);
       domain = await brightData.findDomain(company);
       
       if (domain) {
         await cache.set(cacheKey, domain, 604800); // Cache for 7 days
-        console.log(`✅ Found and cached REAL domain: ${domain}`);
+        console.log(`✅ Found and cached domain: ${domain}`);
       } else {
-        console.log(`❌ NO REAL domain found for: ${company} - marking as failed`);
-        // NO FALLBACK - mark as failed if no real domain found
+        console.log(`❌ No domain found for: ${company}`);
       }
     } else {
       console.log(`✅ Using cached domain: ${domain}`);
     }
     
     if (domain) {
-      // Update lead with REAL domain
+      // Update lead with domain
       const { error: updateError } = await supabase
         .from('leads')
         .update({
@@ -44,21 +49,24 @@ module.exports = async function(job) {
       }
       
       // Queue CEO finding job
-      await ceoQueue.add('find-ceo', {
-        leadId,
-        domain,
-        company,
-        userId,
-        retryCount: 0
-      }, {
-        delay: Math.random() * 2000
-      });
+      const { ceoQueue } = require('../utils/queue');
+      if (ceoQueue) {
+        await ceoQueue.add('find-ceo', {
+          leadId,
+          domain,
+          company,
+          userId,
+          retryCount: 0
+        }, {
+          delay: Math.random() * 3000 // Random delay 0-3 seconds
+        });
+        
+        console.log(`✅ Queued CEO job for lead ${leadId}: ${domain}`);
+      }
       
-      console.log(`✅ Queued CEO job for lead ${leadId}: ${domain}`);
-      
-      return { success: true, domain };
+      return { success: true, domain, leadId, company };
     } else {
-      // Mark as failed if no REAL domain found
+      // Mark as failed if no domain found
       await supabase
         .from('leads')
         .update({
@@ -67,12 +75,26 @@ module.exports = async function(job) {
         })
         .eq('id', leadId);
       
-      console.log(`❌ Lead ${leadId} marked as failed - no real domain found`);
-      return { success: false, error: 'No real domain found' };
+      console.log(`❌ Lead ${leadId} marked as failed - no domain found`);
+      return { success: false, error: 'No domain found', leadId, company };
     }
     
   } catch (error) {
     console.error(`❌ Domain worker error for lead ${leadId}:`, error);
+    
+    // Mark as failed
+    try {
+      await supabase
+        .from('leads')
+        .update({
+          status: 'failed',
+          processed_at: new Date().toISOString()
+        })
+        .eq('id', leadId);
+    } catch (dbError) {
+      console.error(`❌ Failed to update lead status:`, dbError);
+    }
+    
     throw error;
   }
 };
