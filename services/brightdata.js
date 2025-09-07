@@ -5,170 +5,123 @@ class BrightDataService {
     this.apiKey = process.env.BRIGHTDATA_API_KEY;
     this.baseURL = 'https://api.brightdata.com/request';
     
-    console.log('🔧 Bright Data service initialized');
-  }
-
-  async findDomain(companyName) {
-    console.log(`🌐 Finding domain for: ${companyName}`);
+    if (!this.apiKey) {
+      throw new Error('BRIGHTDATA_API_KEY is required');
+    }
     
+    console.log('🔧 Bright Data service initialized with API key: Present');
+  }
+  
+  async findDomain(companyName) {
     try {
-      const searchQuery = `"${companyName}" website`;
+      console.log(`🌐 Finding domain for company: ${companyName}`);
       
-      const response = await axios.post(this.baseURL, {
-        url: `https://www.google.com/search?q=${encodeURIComponent(searchQuery)}`,
-        zone: 'domain_finder',
-        country: 'US',
-        format: 'html'
-      }, {
+      const searchQuery = `"${companyName}" website`;
+      console.log(`🔍 Domain search query: ${searchQuery}`);
+      
+      const requestConfig = {
+        method: 'POST',
+        url: this.baseURL,
         headers: {
           'Authorization': `Bearer ${this.apiKey}`,
           'Content-Type': 'application/json'
         },
+        data: {
+          url: `https://www.google.com/search?q=${encodeURIComponent(searchQuery)}`,
+          zone: 'domain_finder',
+          country: 'US',
+          format: 'html'
+        },
         timeout: 30000
-      });
-
-      if (response.data && response.status === 200) {
+      };
+      
+      console.log('📡 Making Bright Data request...');
+      const response = await axios(requestConfig);
+      
+      if (response.status === 200 && response.data) {
+        console.log('✅ Bright Data response received');
+        
         const domain = this.extractDomainFromHTML(response.data, companyName);
         
         if (domain) {
-          console.log(`✅ Domain found: ${companyName} → ${domain}`);
+          console.log(`✅ Domain found: ${domain}`);
           return domain;
+        } else {
+          console.log(`❌ No domain found for: ${companyName}`);
+          return null;
         }
-      }
-      
-    } catch (error) {
-      console.error(`❌ Domain search failed for ${companyName}: ${error.message}`);
-    }
-    
-    console.log(`❌ No domain found for: ${companyName}`);
-    return null;
-  }
-
-  async findCEO(domain, companyName) {
-    console.log(`👔 Finding CEO: ${companyName} (${domain})`);
-    
-    // Use EXACT format: "CEO of company domain"
-    const query = `CEO of ${companyName} ${domain}`;
-    
-    try {
-      const response = await axios.post(this.baseURL, {
-        url: `https://www.google.com/search?q=${encodeURIComponent(query)}`,
-        zone: 'domain_finder',
-        country: 'US',
-        format: 'html'
-      }, {
-        headers: {
-          'Authorization': `Bearer ${this.apiKey}`,
-          'Content-Type': 'application/json'
-        },
-        timeout: 30000
-      });
-
-      if (response.data && response.status === 200) {
-        const searchText = this.extractVisibleTextFromHTML(response.data);
-        
-        if (searchText && searchText.length > 400) {
-          console.log(`✅ CEO search results found for ${companyName} (${searchText.length} chars)`);
-          return searchText.substring(0, 2000);
-        }
-      }
-      
-    } catch (error) {
-      console.error(`❌ CEO search failed for ${companyName}: ${error.message}`);
-    }
-    
-    console.log(`❌ No CEO results for: ${companyName}`);
-    return '';
-  }
-
-  extractDomainFromHTML(html, companyName) {
-    try {
-      // Extract website links from search results
-      const linkPattern = /<a[^>]+href=["'](https?:\/\/[^"']+)["'][^>]*>/gi;
-      const domains = new Set();
-      let match;
-      
-      while ((match = linkPattern.exec(html)) !== null) {
-        const url = match[1];
-        
-        try {
-          const urlObj = new URL(url);
-          const domain = urlObj.hostname.replace(/^www\./, '');
-          
-          // Filter out non-company domains
-          const excludeDomains = [
-            'google.com', 'linkedin.com', 'facebook.com', 'twitter.com', 'youtube.com',
-            'instagram.com', 'wikipedia.org', 'crunchbase.com', 'glassdoor.com'
-          ];
-          
-          if (!excludeDomains.some(excluded => domain.includes(excluded))) {
-            domains.add(domain);
-          }
-        } catch (urlError) {
-          // Skip invalid URLs
-        }
-      }
-      
-      const domainArray = Array.from(domains);
-      
-      if (domainArray.length === 0) {
+      } else {
+        console.error('❌ Unexpected Bright Data response:', response.status);
         return null;
       }
       
-      // Find most relevant domain
-      const companyWords = companyName.toLowerCase().split(' ').filter(w => w.length > 2);
+    } catch (error) {
+      console.error(`❌ Domain search error for "${companyName}":`, error.message);
       
-      // First, look for exact matches
-      for (const domain of domainArray) {
-        const domainText = domain.toLowerCase();
-        const matchCount = companyWords.filter(word => domainText.includes(word)).length;
-        
-        if (matchCount > 0) {
-          console.log(`🎯 Relevant domain: ${domain} (${matchCount} matches)`);
-          return domain;
-        }
+      if (error.response) {
+        console.error('Error response data:', error.response.data);
+        console.error('Error response status:', error.response.status);
       }
       
-      // If no matches, return first domain (likely the company's main site)
-      console.log(`🔧 Using first domain: ${domainArray[0]}`);
-      return domainArray[0];
-      
-    } catch (error) {
-      console.error('Domain extraction error:', error);
       return null;
     }
   }
-
-  extractVisibleTextFromHTML(html) {
+  
+  extractDomainFromHTML(html, companyName) {
     try {
-      // Extract visible text like your Python script
-      let visibleText = html
-        .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
-        .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
-        .replace(/<[^>]+>/g, ' ')
-        .replace(/\s+/g, ' ')
-        .trim();
+      console.log('🔍 Extracting domain from HTML response...');
       
-      // Focus on CEO-related content
-      const ceoKeywords = ['ceo', 'chief executive', 'president', 'founder', 'executive director'];
-      const sentences = visibleText.split('.').filter(sentence => {
-        const lowerSentence = sentence.toLowerCase();
-        return ceoKeywords.some(keyword => lowerSentence.includes(keyword)) && sentence.length > 20;
-      });
+      const domainRegex = /https?:\/\/(?:www\.)?([a-zA-Z0-9-]+\.[a-zA-Z]{2,})/g;
+      const domains = [];
+      let match;
       
-      if (sentences.length > 0) {
-        // Return the most relevant sentences
-        const relevantText = sentences.slice(0, 8).join('. ');
-        console.log(`📄 Extracted ${sentences.length} CEO-related sentences`);
-        return relevantText;
+      while ((match = domainRegex.exec(html)) !== null) {
+        const domain = match[1].toLowerCase();
+        
+        if (!this.isCommonDomain(domain) && this.isDomainRelevant(domain, companyName)) {
+          domains.push(domain);
+        }
       }
       
-      // Fallback: return first part of text
-      return visibleText.substring(0, 1500);
+      if (domains.length > 0) {
+        const bestDomain = domains[0];
+        console.log(`🎯 Selected domain: ${bestDomain} from ${domains.length} candidates`);
+        return bestDomain;
+      }
+      
+      console.log('❌ No relevant domains found in HTML');
+      return null;
       
     } catch (error) {
-      console.error('Text extraction error:', error);
-      return '';
+      console.error('❌ Error extracting domain from HTML:', error);
+      return null;
+    }
+  }
+  
+  isCommonDomain(domain) {
+    const commonDomains = [
+      'google.com', 'facebook.com', 'twitter.com', 'linkedin.com', 'youtube.com',
+      'instagram.com', 'wikipedia.org', 'amazon.com', 'apple.com', 'microsoft.com',
+      'github.com', 'stackoverflow.com', 'reddit.com', 'medium.com', 'wordpress.com'
+    ];
+    
+    return commonDomains.some(common => domain.includes(common));
+  }
+  
+  isDomainRelevant(domain, companyName) {
+    try {
+      const companyWords = companyName.toLowerCase()
+        .replace(/[^\w\s]/g, ' ')
+        .split(/\s+/)
+        .filter(word => word.length > 2 && !['inc', 'llc', 'corp', 'ltd', 'company', 'the', 'and', 'for', 'with'].includes(word));
+      
+      const domainParts = domain.toLowerCase().split('.');
+      
+      return companyWords.some(word => 
+        domainParts.some(part => part.includes(word) || word.includes(part))
+      );
+    } catch (error) {
+      return false;
     }
   }
 }

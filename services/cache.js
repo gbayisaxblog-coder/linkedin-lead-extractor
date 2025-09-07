@@ -1,54 +1,47 @@
-const redis = require('redis');
+const { redisClient } = require('../utils/queue');
 
 class CacheService {
   constructor() {
-    this.client = redis.createClient({
-      url: process.env.REDIS_URL
-    });
-    
-    this.client.on('error', (err) => {
-      console.error('❌ Redis error:', err);
-    });
-    
-    this.client.on('connect', () => {
-      console.log('✅ Redis connected');
-    });
-    
-    this.client.connect();
+    this.domainTTL = 7 * 24 * 60 * 60; // 7 days for domains
+    this.ceoTTL = 24 * 60 * 60; // 1 day for CEOs
   }
-
-  async get(key) {
+  
+  async getDomain(companyName) {
     try {
-      const value = await this.client.get(key);
-      if (value) {
-        console.log(`✅ Cache hit for: ${key}`);
+      if (!redisClient || !redisClient.isReady) {
+        console.log('⚠️ Redis not ready, skipping cache');
+        return null;
       }
-      return value;
+      
+      const key = `domain:${companyName.toLowerCase().trim()}`;
+      const cached = await redisClient.get(key);
+      
+      if (cached) {
+        console.log(`✅ Cache hit for domain: ${companyName} = ${cached}`);
+        return cached === 'NOT_FOUND' ? null : cached;
+      }
+      
+      return null;
     } catch (error) {
       console.error('❌ Cache get error:', error);
       return null;
     }
   }
-
-  async set(key, value, ttl = 86400) {
+  
+  async setDomain(companyName, domain) {
     try {
-      await this.client.setEx(key, ttl, value);
-      console.log(`✅ Cached: ${key} = ${value} (TTL: ${ttl}s)`);
-      return true;
+      if (!redisClient || !redisClient.isReady) {
+        console.log('⚠️ Redis not ready, skipping cache');
+        return;
+      }
+      
+      const key = `domain:${companyName.toLowerCase().trim()}`;
+      const value = domain || 'NOT_FOUND';
+      
+      await redisClient.setEx(key, this.domainTTL, value);
+      console.log(`✅ Cached domain: ${companyName} = ${value} (TTL: ${this.domainTTL}s)`);
     } catch (error) {
       console.error('❌ Cache set error:', error);
-      return false;
-    }
-  }
-
-  async del(key) {
-    try {
-      await this.client.del(key);
-      console.log(`✅ Cache deleted: ${key}`);
-      return true;
-    } catch (error) {
-      console.error('❌ Cache del error:', error);
-      return false;
     }
   }
 }

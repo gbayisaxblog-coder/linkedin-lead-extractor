@@ -27,6 +27,24 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'healthy', version: '2.0.0' });
 });
 
-app.listen(PORT, () => {
-  console.log('✅ LinkedIn Lead Extractor v2.0 running on port', PORT);
-});
+// Initialize queues
+const { initializeQueues } = require('./utils/queue');
+
+async function startServer() {
+  try {
+    // Initialize queues first
+    await initializeQueues();
+    console.log('✅ Queues initialized successfully');
+    
+    app.listen(PORT, () => {
+      console.log('✅ LinkedIn Lead Extractor v2.0 running on port', PORT);
+      console.log('🔄 Workers ready to process leads...');
+    });
+    
+  } catch (error) {
+    console.error('❌ Server startup error:', error);
+    process.exit(1);
+  }
+}
+
+startServer();
