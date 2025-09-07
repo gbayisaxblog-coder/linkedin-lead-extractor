@@ -1,4 +1,4 @@
-// workers/domainWorker.js - FIXED VERSION
+// workers/domainWorker.js - BULLETPROOF VERSION
 const BrightDataService = require('../services/brightdata');
 const cache = require('../services/cache');
 const { supabase } = require('../utils/database');
@@ -6,7 +6,23 @@ const { supabase } = require('../utils/database');
 const brightData = new BrightDataService();
 
 module.exports = async function(job) {
+  console.log(`🌐 Domain worker processing job ${job.id} with data:`, job.data);
+  
+  // Validate job data
+  if (!job.data) {
+    throw new Error('No job data provided');
+  }
+  
   const { leadId, company, userId } = job.data;
+  
+  // Validate required fields
+  if (!leadId) {
+    throw new Error('leadId is required');
+  }
+  
+  if (!company) {
+    throw new Error('company is required');
+  }
   
   console.log(`🌐 Domain worker started for lead ${leadId}: ${company}`);
   
@@ -49,19 +65,27 @@ module.exports = async function(job) {
       }
       
       // Queue CEO finding job
-      const { ceoQueue } = require('../utils/queue');
-      if (ceoQueue) {
-        await ceoQueue.add('find-ceo', {
-          leadId,
-          domain,
-          company,
-          userId,
-          retryCount: 0
-        }, {
-          delay: Math.random() * 3000 // Random delay 0-3 seconds
-        });
-        
-        console.log(`✅ Queued CEO job for lead ${leadId}: ${domain}`);
+      try {
+        const { ceoQueue } = require('../utils/queue');
+        if (ceoQueue) {
+          const ceoJobData = {
+            leadId,
+            domain,
+            company,
+            userId: userId || 'system',
+            retryCount: 0
+          };
+          
+          console.log(`🔄 Queueing CEO job with data:`, ceoJobData);
+          
+          const ceoJob = await ceoQueue.add('find-ceo', ceoJobData, {
+            delay: Math.random() * 3000 // Random delay 0-3 seconds
+          });
+          
+          console.log(`✅ Queued CEO job ${ceoJob.id} for lead ${leadId}: ${domain}`);
+        }
+      } catch (ceoQueueError) {
+        console.error(`❌ Failed to queue CEO job for lead ${leadId}:`, ceoQueueError.message);
       }
       
       return { success: true, domain, leadId, company };

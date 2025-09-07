@@ -1,4 +1,4 @@
-// utils/queue.js - COMPLETE WORKING VERSION
+// utils/queue.js - COMPLETE FIXED VERSION
 const { Queue, Worker } = require('bullmq');
 const Redis = require('ioredis');
 
@@ -64,10 +64,6 @@ async function initializeQueues() {
     
     console.log('✅ All queues initialized successfully');
     
-    // Test queue by adding a test job
-    await domainQueue.add('test-connection', { test: true }, { removeOnComplete: 1 });
-    console.log('✅ Queue test job added successfully');
-    
   } catch (error) {
     console.error('❌ Queue initialization error:', error);
     throw error;
@@ -80,30 +76,31 @@ async function startWorkers() {
     
     // Domain finding worker
     const domainWorker = new Worker('domain-finding', async (job) => {
-      if (job.name === 'test-connection') {
-        console.log('✅ Queue test job processed successfully');
-        return { success: true, test: true };
+      console.log(`🔄 Processing domain job ${job.id} with data:`, job.data);
+      
+      // Validate job data
+      if (!job.data || !job.data.leadId || !job.data.company) {
+        console.error(`❌ Invalid job data for job ${job.id}:`, job.data);
+        throw new Error('Invalid job data: missing leadId or company');
       }
       
-      // Process real domain finding jobs
+      // Process domain finding
       return require('../workers/domainWorker')(job);
     }, {
       connection: redisConnection,
-      concurrency: 3, // Reduced concurrency for better reliability
+      concurrency: 3,
       limiter: {
-        max: 5, // 5 jobs per minute for BrightData rate limits
+        max: 5,
         duration: 60000
       }
     });
     
     domainWorker.on('completed', (job, result) => {
-      if (job.name !== 'test-connection') {
-        console.log(`✅ Domain job ${job.id} completed for company: ${job.data.company}`);
-      }
+      console.log(`✅ Domain job ${job.id} completed for company: ${job.data?.company || 'unknown'}`);
     });
     
     domainWorker.on('failed', (job, err) => {
-      console.error(`❌ Domain job ${job?.id} failed:`, err.message);
+      console.error(`❌ Domain job ${job?.id} failed for company: ${job?.data?.company || 'unknown'}:`, err.message);
     });
     
     domainWorker.on('error', (err) => {
@@ -111,21 +108,31 @@ async function startWorkers() {
     });
     
     // CEO finding worker
-    const ceoWorker = new Worker('ceo-finding', require('../workers/ceoWorker'), {
+    const ceoWorker = new Worker('ceo-finding', async (job) => {
+      console.log(`🔄 Processing CEO job ${job.id} with data:`, job.data);
+      
+      // Validate job data
+      if (!job.data || !job.data.leadId || !job.data.domain || !job.data.company) {
+        console.error(`❌ Invalid CEO job data for job ${job.id}:`, job.data);
+        throw new Error('Invalid job data: missing leadId, domain, or company');
+      }
+      
+      return require('../workers/ceoWorker')(job);
+    }, {
       connection: redisConnection,
-      concurrency: 2, // Reduced concurrency for better reliability
+      concurrency: 2,
       limiter: {
-        max: 3, // 3 jobs per minute for OpenAI rate limits
+        max: 3,
         duration: 60000
       }
     });
     
     ceoWorker.on('completed', (job, result) => {
-      console.log(`✅ CEO job ${job.id} completed for company: ${job.data.company}`);
+      console.log(`✅ CEO job ${job.id} completed for company: ${job.data?.company || 'unknown'}`);
     });
     
     ceoWorker.on('failed', (job, err) => {
-      console.error(`❌ CEO job ${job?.id} failed:`, err.message);
+      console.error(`❌ CEO job ${job?.id} failed for company: ${job?.data?.company || 'unknown'}:`, err.message);
     });
     
     ceoWorker.on('error', (err) => {

@@ -3,15 +3,6 @@ const express = require('express');
 const { supabase } = require('../utils/database');
 const router = express.Router();
 
-// Import queues (will be initialized by server.js)
-let domainQueue;
-try {
-  const queueModule = require('../utils/queue');
-  domainQueue = queueModule.domainQueue;
-} catch (error) {
-  console.log('⚠️ Queue not yet initialized, will retry after server startup');
-}
-
 // Bulletproof extract route
 router.post('/extract', async (req, res) => {
   console.log('=== EXTRACTION REQUEST ===');
@@ -92,28 +83,38 @@ router.post('/extract', async (req, res) => {
     }
     
     // Queue domain finding jobs for inserted leads
+    let queuedJobs = 0;
     if (insertedLeads.length > 0) {
       try {
-        // Get queue reference if not available
-        if (!domainQueue) {
-          const queueModule = require('../utils/queue');
-          domainQueue = queueModule.domainQueue;
-        }
+        // Get queue reference dynamically
+        const { domainQueue } = require('../utils/queue');
         
         if (domainQueue) {
           console.log(`🚀 Queueing ${insertedLeads.length} domain finding jobs...`);
           
           for (const lead of insertedLeads) {
             try {
-              await domainQueue.add('find-domain', {
+              // Validate data before queueing
+              if (!lead.id || !lead.company) {
+                console.error(`❌ Invalid lead data for queueing:`, lead);
+                continue;
+              }
+              
+              const jobData = {
                 leadId: lead.id,
                 company: lead.company,
-                userId: 'system'
-              }, {
+                userId: 'chrome_extension'
+              };
+              
+              console.log(`🔄 Queueing job with data:`, jobData);
+              
+              const job = await domainQueue.add('find-domain', jobData, {
                 delay: Math.random() * 5000 // Random delay 0-5 seconds
               });
               
-              console.log(`🎯 Queued domain job for lead ${lead.id}: ${lead.company}`);
+              console.log(`🎯 Queued domain job ${job.id} for lead ${lead.id}: ${lead.company}`);
+              queuedJobs++;
+              
             } catch (queueError) {
               console.error(`❌ Failed to queue domain job for lead ${lead.id}:`, queueError.message);
             }
@@ -129,7 +130,7 @@ router.post('/extract', async (req, res) => {
     console.log('=== SUMMARY ===');
     console.log(`✅ Inserted: ${insertedCount}`);
     console.log(`🔄 Skipped: ${skippedCount}`);
-    console.log(`🚀 Queued: ${insertedLeads.length} domain jobs`);
+    console.log(`🚀 Queued: ${queuedJobs} domain jobs`);
     console.log('===============');
     
     res.json({
@@ -137,7 +138,7 @@ router.post('/extract', async (req, res) => {
       insertedCount: insertedCount,
       skippedCount: skippedCount,
       totalProcessed: leads.length,
-      queuedJobs: insertedLeads.length
+      queuedJobs: queuedJobs
     });
     
   } catch (error) {
@@ -153,7 +154,7 @@ router.get('/status/:fileId', async (req, res) => {
     
     const { data: leads, error } = await supabase
       .from('leads')
-      .select('status, ceo_name')
+      .select('status, ceo_name, domain')
       .eq('file_id', fileId);
     
     if (error) {
@@ -166,6 +167,7 @@ router.get('/status/:fileId', async (req, res) => {
       processing: leads.filter(l => l.status === 'processing').length,
       completed: leads.filter(l => l.status === 'completed').length,
       failed: leads.filter(l => l.status === 'failed').length,
+      with_domain: leads.filter(l => l.domain).length,
       with_ceo: leads.filter(l => l.ceo_name).length
     });
     
@@ -228,6 +230,7 @@ router.post('/check-duplicates', async (req, res) => {
   }
 });
 
+// Queue monitoring route
 router.get('/queue-status', async (req, res) => {
   try {
     const { getQueueStats } = require('../utils/queue');
@@ -248,7 +251,7 @@ router.get('/queue-status', async (req, res) => {
   }
 });
 
-// Add manual queue trigger for testing
+// Manual queue trigger for testing
 router.post('/trigger-domain-finding', async (req, res) => {
   try {
     const { leadId, company } = req.body;
@@ -263,17 +266,22 @@ router.post('/trigger-domain-finding', async (req, res) => {
       return res.status(500).json({ error: 'Domain queue not available' });
     }
     
-    await domainQueue.add('find-domain', {
-      leadId,
-      company,
+    const jobData = {
+      leadId: leadId,
+      company: company,
       userId: 'manual-trigger'
-    });
+    };
     
-    console.log(`🎯 Manually queued domain job for lead ${leadId}: ${company}`);
+    console.log(`🔄 Manual trigger with data:`, jobData);
+    
+    const job = await domainQueue.add('find-domain', jobData);
+    
+    console.log(`🎯 Manually queued domain job ${job.id} for lead ${leadId}: ${company}`);
     
     res.json({
       success: true,
       message: `Domain finding job queued for ${company}`,
+      jobId: job.id,
       leadId,
       company
     });
