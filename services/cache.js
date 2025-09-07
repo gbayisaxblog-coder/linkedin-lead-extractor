@@ -44,6 +44,45 @@ class CacheService {
       console.error('❌ Cache set error:', error);
     }
   }
+  
+  async getCEO(domain) {
+    try {
+      if (!redisClient || !redisClient.isReady) {
+        console.log('⚠️ Redis not ready, skipping cache');
+        return null;
+      }
+      
+      const key = `ceo:${domain.toLowerCase().trim()}`;
+      const cached = await redisClient.get(key);
+      
+      if (cached) {
+        console.log(`✅ Cache hit for CEO: ${domain} = ${cached}`);
+        return cached === 'NOT_FOUND' ? null : cached;
+      }
+      
+      return null;
+    } catch (error) {
+      console.error('❌ Cache get error:', error);
+      return null;
+    }
+  }
+  
+  async setCEO(domain, ceoName) {
+    try {
+      if (!redisClient || !redisClient.isReady) {
+        console.log('⚠️ Redis not ready, skipping cache');
+        return;
+      }
+      
+      const key = `ceo:${domain.toLowerCase().trim()}`;
+      const value = ceoName || 'NOT_FOUND';
+      
+      await redisClient.setEx(key, this.ceoTTL, value);
+      console.log(`✅ Cached CEO: ${domain} = ${value} (TTL: ${this.ceoTTL}s)`);
+    } catch (error) {
+      console.error('❌ Cache set error:', error);
+    }
+  }
 }
 
 module.exports = new CacheService();
