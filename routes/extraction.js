@@ -1,4 +1,4 @@
-// routes/extraction.js - COMPLETE FIXED VERSION WITH QUEUE GETTERS
+// routes/extraction.js - COMPLETE WITH MANUAL TRIGGERS
 const express = require('express');
 const { supabase } = require('../utils/database');
 const router = express.Router();
@@ -18,12 +18,11 @@ router.post('/extract', async (req, res) => {
     
     let insertedCount = 0;
     let skippedCount = 0;
-    const insertedLeads = []; // Track inserted leads for queueing
+    const insertedLeads = [];
     
     for (let i = 0; i < leads.length; i++) {
       const lead = leads[i];
       
-      // Clean data
       const fullName = String(lead.fullName || `${lead.firstName || ''} ${lead.lastName || ''}`)
         .trim()
         .substring(0, 200);
@@ -82,48 +81,18 @@ router.post('/extract', async (req, res) => {
       }
     }
     
-    // Queue domain finding jobs for inserted leads - FIXED WITH GETTER FUNCTIONS
+    // Queue domain finding jobs
     let queuedJobs = 0;
     if (insertedLeads.length > 0) {
-      console.log('🔍 DEBUG: Starting queue process...');
-      console.log(`🔍 DEBUG: Have ${insertedLeads.length} leads to queue`);
-      
       try {
-        console.log('🔍 DEBUG: Step 1 - Loading queue module...');
-        
         const queueModule = require('../utils/queue');
-        console.log('✅ DEBUG: Queue module loaded successfully');
-        console.log('🔍 DEBUG: Queue module type:', typeof queueModule);
-        console.log('🔍 DEBUG: Queue initialized:', queueModule.initialized);
-        console.log('🔍 DEBUG: Available methods:', Object.keys(queueModule));
-        
-        // Use getter function instead of direct property access
-        console.log('🔍 DEBUG: Step 2 - Getting domain queue via getter...');
-        const domainQueue = queueModule.getDomainQueue();
-        
-        console.log('🔍 DEBUG: Domain queue from getter:', !!domainQueue);
-        console.log('🔍 DEBUG: Domain queue type:', typeof domainQueue);
+        const domainQueue = queueModule.getDomainQueue ? queueModule.getDomainQueue() : queueModule.domainQueue;
         
         if (domainQueue) {
-          console.log('✅ DEBUG: Domain queue is available!');
-          console.log('🔍 DEBUG: Domain queue constructor:', domainQueue.constructor?.name);
-          
-          // Test if we can call methods on the queue
-          try {
-            console.log('🔍 DEBUG: Testing queue.getWaiting()...');
-            const waitingJobs = await domainQueue.getWaiting();
-            console.log('✅ DEBUG: Queue.getWaiting() works, waiting jobs:', waitingJobs.length);
-          } catch (testError) {
-            console.error('❌ DEBUG: Queue.getWaiting() failed:', testError.message);
-          }
-          
           console.log(`🚀 Queueing ${insertedLeads.length} domain finding jobs...`);
           
           for (const lead of insertedLeads) {
             try {
-              console.log(`🔍 DEBUG: Processing lead ${lead.id} - ${lead.company}`);
-              
-              // Validate data before queueing
               if (!lead.id || !lead.company) {
                 console.error(`❌ Invalid lead data for queueing:`, lead);
                 continue;
@@ -135,36 +104,23 @@ router.post('/extract', async (req, res) => {
                 userId: 'chrome_extension'
               };
               
-              console.log(`🔄 DEBUG: About to queue job with data:`, jobData);
-              
               const job = await domainQueue.add('find-domain', jobData, {
-                delay: Math.random() * 5000 // Random delay 0-5 seconds
+                delay: Math.random() * 5000
               });
               
-              console.log(`🎯 SUCCESS: Queued domain job ${job.id} for lead ${lead.id}: ${lead.company}`);
+              console.log(`🎯 Queued domain job ${job.id} for lead ${lead.id}: ${lead.company}`);
               queuedJobs++;
               
             } catch (queueError) {
-              console.error(`❌ DEBUG: Failed to queue job for lead ${lead.id}:`, queueError.message);
-              console.error(`❌ DEBUG: Queue error stack:`, queueError.stack);
+              console.error(`❌ Failed to queue job for lead ${lead.id}:`, queueError.message);
             }
           }
-          
-          console.log(`✅ DEBUG: Finished queueing. Total queued: ${queuedJobs}`);
-          
         } else {
-          console.error('❌ DEBUG: Domain queue is NULL/UNDEFINED from getter!');
-          console.error('❌ DEBUG: Queue module initialized:', queueModule.initialized);
-          console.error('❌ DEBUG: Direct queue access:', !!queueModule.domainQueue);
-          console.log('⚠️ Domain queue not available, leads will need manual processing');
+          console.log('⚠️ Domain queue not available');
         }
-        
       } catch (queueError) {
-        console.error('❌ DEBUG: Queue process error:', queueError.message);
-        console.error('❌ DEBUG: Queue error stack:', queueError.stack);
+        console.error('❌ Queue error:', queueError.message);
       }
-    } else {
-      console.log('🔍 DEBUG: No leads to queue (insertedLeads.length = 0)');
     }
     
     console.log('=== SUMMARY ===');
@@ -183,7 +139,6 @@ router.post('/extract', async (req, res) => {
     
   } catch (error) {
     console.error('❌ Route error:', error);
-    console.error('❌ Route error stack:', error.stack);
     res.status(500).json({ error: error.message });
   }
 });
@@ -230,7 +185,6 @@ router.post('/check-duplicates', async (req, res) => {
     
     const duplicateResults = [];
     
-    // Check each lead individually for duplicates
     for (const lead of leads) {
       const fullName = String(lead.fullName || '').toLowerCase().trim();
       const company = String(lead.company || '').toLowerCase().trim();
@@ -271,127 +225,6 @@ router.post('/check-duplicates', async (req, res) => {
   }
 });
 
-// DEBUG ROUTE - Test queue system directly
-router.get('/debug-queue', async (req, res) => {
-  try {
-    console.log('🔍 DEBUG ROUTE: Testing queue system...');
-    
-    const debugInfo = {
-      timestamp: new Date().toISOString(),
-      nodeVersion: process.version,
-      environment: process.env.NODE_ENV || 'development'
-    };
-    
-    // Test 1: Can we load the queue module?
-    let queueModule;
-    try {
-      queueModule = require('../utils/queue');
-      debugInfo.moduleLoaded = true;
-      debugInfo.moduleType = typeof queueModule;
-      debugInfo.moduleKeys = Object.keys(queueModule);
-      debugInfo.initialized = queueModule.initialized;
-      console.log('✅ DEBUG: Queue module loaded successfully');
-      console.log('🔍 DEBUG: Queue initialized:', queueModule.initialized);
-    } catch (moduleError) {
-      console.error('❌ DEBUG: Failed to load queue module:', moduleError.message);
-      debugInfo.moduleLoaded = false;
-      debugInfo.moduleError = moduleError.message;
-      return res.json({ success: false, debug: debugInfo });
-    }
-    
-    // Test 2: Extract queues using both methods
-    const directDomainQueue = queueModule.domainQueue;
-    const getterDomainQueue = queueModule.getDomainQueue ? queueModule.getDomainQueue() : null;
-    const { ceoQueue, emailQueue, redisConnection } = queueModule;
-    
-    debugInfo.queues = {
-      domain: {
-        directExists: !!directDomainQueue,
-        getterExists: !!getterDomainQueue,
-        directType: typeof directDomainQueue,
-        getterType: typeof getterDomainQueue,
-        constructor: getterDomainQueue?.constructor?.name || directDomainQueue?.constructor?.name
-      },
-      ceo: {
-        exists: !!ceoQueue,
-        type: typeof ceoQueue,
-        constructor: ceoQueue?.constructor?.name
-      },
-      email: {
-        exists: !!emailQueue,
-        type: typeof emailQueue,
-        constructor: emailQueue?.constructor?.name
-      },
-      redis: {
-        exists: !!redisConnection,
-        type: typeof redisConnection,
-        constructor: redisConnection?.constructor?.name
-      }
-    };
-    
-    console.log('🔍 DEBUG: Queue availability:', debugInfo.queues);
-    
-    // Test 3: Test queue operations with the working queue
-    const workingQueue = getterDomainQueue || directDomainQueue;
-    if (workingQueue) {
-      try {
-        const waiting = await workingQueue.getWaiting();
-        const active = await workingQueue.getActive();
-        const completed = await workingQueue.getCompleted();
-        const failed = await workingQueue.getFailed();
-        
-        debugInfo.queueStats = {
-          waiting: waiting.length,
-          active: active.length,
-          completed: completed.length,
-          failed: failed.length
-        };
-        
-        console.log('✅ DEBUG: Queue stats retrieved:', debugInfo.queueStats);
-      } catch (statsError) {
-        console.error('❌ DEBUG: Failed to get queue stats:', statsError.message);
-        debugInfo.statsError = statsError.message;
-      }
-      
-      // Test 4: Try adding a test job
-      try {
-        const testJob = await workingQueue.add('debug-test', {
-          leadId: 'debug-test-' + Date.now(),
-          company: 'Debug Test Company',
-          userId: 'debug-route'
-        });
-        
-        debugInfo.testJob = {
-          success: true,
-          jobId: testJob.id,
-          jobName: testJob.name
-        };
-        
-        console.log('✅ DEBUG: Test job added successfully:', debugInfo.testJob);
-      } catch (jobError) {
-        console.error('❌ DEBUG: Failed to add test job:', jobError.message);
-        debugInfo.testJob = {
-          success: false,
-          error: jobError.message
-        };
-      }
-    }
-    
-    res.json({
-      success: true,
-      debug: debugInfo
-    });
-    
-  } catch (error) {
-    console.error('❌ DEBUG ROUTE: Error:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message,
-      stack: error.stack
-    });
-  }
-});
-
 // Queue monitoring route
 router.get('/queue-status', async (req, res) => {
   try {
@@ -399,13 +232,11 @@ router.get('/queue-status', async (req, res) => {
     
     const queueModule = require('../utils/queue');
     
-    // Try both getQueueStats and manual stats
     let stats;
     try {
       if (queueModule.getQueueStats) {
         stats = await queueModule.getQueueStats();
       } else {
-        // Manual stats gathering
         const domainQueue = queueModule.getDomainQueue ? queueModule.getDomainQueue() : queueModule.domainQueue;
         const ceoQueue = queueModule.getCeoQueue ? queueModule.getCeoQueue() : queueModule.ceoQueue;
         
@@ -450,7 +281,7 @@ router.get('/queue-status', async (req, res) => {
   }
 });
 
-// Manual queue trigger for testing - FIXED WITH GETTER
+// Manual queue trigger for testing
 router.post('/trigger-domain-finding', async (req, res) => {
   try {
     const { leadId, company } = req.body;
@@ -464,19 +295,14 @@ router.post('/trigger-domain-finding', async (req, res) => {
     console.log('🔍 MANUAL TRIGGER: Loading queue module...');
     const queueModule = require('../utils/queue');
     
-    console.log('🔍 MANUAL TRIGGER: Queue initialized:', queueModule.initialized);
-    
-    // Use getter function if available, otherwise direct access
     const domainQueue = queueModule.getDomainQueue ? queueModule.getDomainQueue() : queueModule.domainQueue;
     
     console.log('🔍 MANUAL TRIGGER: Domain queue available:', !!domainQueue);
-    console.log('🔍 MANUAL TRIGGER: Domain queue type:', typeof domainQueue);
     
     if (!domainQueue) {
       return res.status(500).json({ 
         error: 'Domain queue not available',
-        initialized: queueModule.initialized,
-        debug: 'Queue may not be initialized yet'
+        initialized: queueModule.initialized
       });
     }
     
@@ -504,9 +330,144 @@ router.post('/trigger-domain-finding', async (req, res) => {
     console.error('❌ MANUAL TRIGGER: Error:', error);
     res.status(500).json({ 
       success: false, 
-      error: error.message,
-      stack: error.stack
+      error: error.message
     });
+  }
+});
+
+// Manual trigger to process pending leads
+router.post('/trigger-pending-processing', async (req, res) => {
+  try {
+    console.log('🔄 Manual trigger: Processing pending leads...');
+    
+    const { data: pendingLeads, error } = await supabase
+      .from('leads')
+      .select('id, company, domain')
+      .eq('status', 'pending')
+      .limit(100);
+    
+    if (error) {
+      return res.status(500).json({ error: error.message });
+    }
+    
+    console.log(`🔍 Found ${pendingLeads.length} pending leads`);
+    
+    const queueModule = require('../utils/queue');
+    const domainQueue = queueModule.getDomainQueue ? queueModule.getDomainQueue() : queueModule.domainQueue;
+    
+    if (!domainQueue) {
+      return res.status(500).json({ error: 'Domain queue not available' });
+    }
+    
+    let queuedJobs = 0;
+    
+    for (const lead of pendingLeads) {
+      try {
+        await domainQueue.add('find-domain', {
+          leadId: lead.id,
+          company: lead.company,
+          userId: 'manual-pending-trigger'
+        }, {
+          delay: Math.random() * 2000
+        });
+        
+        queuedJobs++;
+        console.log(`🎯 Queued domain job for: ${lead.company}`);
+      } catch (queueError) {
+        console.error(`❌ Failed to queue job for ${lead.id}:`, queueError.message);
+      }
+    }
+    
+    res.json({
+      success: true,
+      message: `Queued ${queuedJobs} domain finding jobs for pending leads`,
+      pendingLeads: pendingLeads.length,
+      queuedJobs: queuedJobs
+    });
+    
+  } catch (error) {
+    console.error('❌ Manual pending trigger error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Manual trigger to process leads stuck in processing
+router.post('/trigger-stuck-processing', async (req, res) => {
+  try {
+    console.log('🔄 Manual trigger: Reprocessing stuck leads...');
+    
+    // Get leads stuck in processing for more than 10 minutes
+    const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    
+    const { data: stuckLeads, error } = await supabase
+      .from('leads')
+      .select('id, company, domain')
+      .eq('status', 'processing')
+      .lt('updated_at', tenMinutesAgo)
+      .limit(100);
+    
+    if (error) {
+      return res.status(500).json({ error: error.message });
+    }
+    
+    console.log(`🔍 Found ${stuckLeads.length} stuck processing leads`);
+    
+    // Reset them to pending
+    if (stuckLeads.length > 0) {
+      const { error: resetError } = await supabase
+        .from('leads')
+        .update({ status: 'pending' })
+        .in('id', stuckLeads.map(l => l.id));
+      
+      if (resetError) {
+        return res.status(500).json({ error: resetError.message });
+      }
+    }
+    
+    const queueModule = require('../utils/queue');
+    const domainQueue = queueModule.getDomainQueue ? queueModule.getDomainQueue() : queueModule.domainQueue;
+    const ceoQueue = queueModule.getCeoQueue ? queueModule.getCeoQueue() : queueModule.ceoQueue;
+    
+    let queuedJobs = 0;
+    
+    for (const lead of stuckLeads) {
+      try {
+        if (lead.domain && ceoQueue) {
+          // Has domain, queue CEO job
+          await ceoQueue.add('find-ceo', {
+            leadId: lead.id,
+            domain: lead.domain,
+            company: lead.company,
+            userId: 'manual-stuck-trigger',
+            retryCount: 0
+          });
+          queuedJobs++;
+          console.log(`🎯 Requeued CEO job for: ${lead.company} (${lead.domain})`);
+        } else if (domainQueue) {
+          // No domain, queue domain job
+          await domainQueue.add('find-domain', {
+            leadId: lead.id,
+            company: lead.company,
+            userId: 'manual-stuck-trigger'
+          });
+          queuedJobs++;
+          console.log(`🎯 Requeued domain job for: ${lead.company}`);
+        }
+      } catch (queueError) {
+        console.error(`❌ Failed to requeue ${lead.id}:`, queueError.message);
+      }
+    }
+    
+    res.json({
+      success: true,
+      message: `Reset and requeued ${queuedJobs} stuck leads`,
+      stuckLeads: stuckLeads.length,
+      queuedJobs: queuedJobs
+    });
+    
+  } catch (error) {
+    console.error('❌ Manual stuck trigger error:', error);
+    res.status(500).json({ error: error.message });
   }
 });
 

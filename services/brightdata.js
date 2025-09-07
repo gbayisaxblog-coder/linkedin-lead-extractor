@@ -1,4 +1,4 @@
-// services/brightdata.js - ULTIMATE COST-OPTIMIZED VERSION
+// services/brightdata.js - COMPLETE WITH STRICT FILTERING
 const axios = require('axios');
 
 class BrightDataService {
@@ -20,7 +20,7 @@ class BrightDataService {
         return null;
       }
       
-      const domain = await this.findDomainWithSmartOpenAI(searchResults, companyName);
+      const domain = await this.findDomainWithStrictFiltering(searchResults, companyName);
       
       if (domain) {
         console.log(`✅ Domain found: ${companyName} → ${domain}`);
@@ -74,141 +74,180 @@ class BrightDataService {
     }
   }
 
-  async findDomainWithSmartOpenAI(html, companyName) {
-    console.log(`🤖 SMART OPENAI ANALYSIS for: ${companyName}`);
+  async findDomainWithStrictFiltering(html, companyName) {
+    console.log(`🛡️ STRICT FILTERING for: ${companyName}`);
     
     try {
-      // STEP 1: Extract ALL domains comprehensively
+      // STEP 1: Extract ALL domains
       const allDomains = this.extractEveryPossibleDomain(html);
       
       if (allDomains.length === 0) {
-        console.log(`❌ No domains extracted from search results`);
+        console.log(`❌ No domains extracted`);
         return null;
       }
       
       console.log(`🔍 Extracted ${allDomains.length} total domains`);
       
-      // STEP 2: SMART PRE-FILTERING to reduce AI costs
-      const relevantDomains = this.smartPreFilter(allDomains, companyName);
+      // STEP 2: STRICT filtering - remove ALL platform domains
+      const validDomains = allDomains.filter(item => {
+        const domain = item.domain.toLowerCase();
+        
+        // COMPREHENSIVE platform exclusion list
+        const platformDomains = [
+          // Social media
+          'facebook.com', 'twitter.com', 'instagram.com', 'tiktok.com', 'snapchat.com',
+          'linkedin.com', 'youtube.com', 'pinterest.com', 'tumblr.com', 'x.com', 'pic.x.com',
+          
+          // E-commerce
+          'amazon.com', 'ebay.com', 'etsy.com', 'shopify.com',
+          
+          // Business directories
+          'crunchbase.com', 'bloomberg.com', 'reuters.com', 'forbes.com',
+          'glassdoor.com', 'indeed.com', 'angel.co', 'pitchbook.com',
+          
+          // Tech platforms
+          'github.com', 'stackoverflow.com', 'reddit.com', 'medium.com',
+          'dev.to', 'hashnode.com', 'producthunt.com',
+          
+          // Google services
+          'google.com', 'youtube.com', 'maps.google.com', 'translate.google.com',
+          'support.google.com', 'accounts.google.com', 'policies.google.com',
+          'developers.google.com', 'googleblog.com',
+          
+          // Other platforms
+          'w3.org', 'wikipedia.org', 'mozilla.org', 'apache.org',
+          'bit.ly', 'tinyurl.com', 'ow.ly', 't.co',
+          'spotify.com', 'soundcloud.com', 'vimeo.com',
+          'slack.com', 'discord.com', 'telegram.org',
+          
+          // Content/sharing platforms
+          'open.spotify.com', 'threads.net', 'doi.org', 'digital.gov'
+        ];
+        
+        const isPlatform = platformDomains.some(platform => {
+          return domain === platform || domain.endsWith('.' + platform);
+        });
+        
+        if (isPlatform) {
+          console.log(`❌ STRICT FILTER: Excluded platform domain: ${domain}`);
+          return false;
+        }
+        
+        return true;
+      });
       
-      console.log(`🔍 Smart pre-filter: ${relevantDomains.length} relevant domains (from ${allDomains.length})`);
-      relevantDomains.forEach((d, i) => {
+      console.log(`🔍 After strict filtering: ${validDomains.length} valid domains remain`);
+      validDomains.slice(0, 10).forEach((d, i) => {
         console.log(`  ${i + 1}. ${d.domain} - "${d.context.substring(0, 60)}..."`);
       });
       
-      if (relevantDomains.length === 0) {
-        console.log(`❌ No relevant domains after smart filtering`);
+      if (validDomains.length === 0) {
+        console.log(`❌ No valid domains after strict filtering`);
         return null;
       }
       
-      // STEP 3: If only one relevant domain, return it (no AI needed)
+      // STEP 3: Smart company-specific filtering
+      const relevantDomains = this.smartCompanyFilter(validDomains, companyName);
+      
+      if (relevantDomains.length === 0) {
+        console.log(`❌ No relevant domains after company filtering`);
+        return null;
+      }
+      
       if (relevantDomains.length === 1) {
-        console.log(`✅ Only one relevant domain found: ${relevantDomains[0].domain}`);
+        console.log(`✅ Only one relevant domain: ${relevantDomains[0].domain}`);
         return relevantDomains[0].domain;
       }
       
-      // STEP 4: Use OpenAI only for final selection among pre-filtered candidates
+      // STEP 4: Use OpenAI for final intelligent selection
       const selectedDomain = await this.useOpenAIForFinalSelection(relevantDomains, companyName);
       
       return selectedDomain;
       
     } catch (error) {
-      console.error('Smart OpenAI analysis error:', error.message);
+      console.error('Strict filtering error:', error.message);
       return null;
     }
   }
 
-  smartPreFilter(allDomains, companyName) {
+  smartCompanyFilter(validDomains, companyName) {
     const companyWords = this.normalizeCompanyName(companyName);
     const companyLower = companyName.toLowerCase();
     
-    console.log(`🧠 Smart pre-filtering with company words: [${companyWords.join(', ')}]`);
+    console.log(`🧠 Company filtering with words: [${companyWords.join(', ')}]`);
     
-    // STEP 1: Remove obvious platform domains
-    const nonPlatformDomains = allDomains.filter(item => {
-      const domain = item.domain.toLowerCase();
-      
-      const platformDomains = [
-        'google.com', 'youtube.com', 'linkedin.com', 'facebook.com', 
-        'twitter.com', 'instagram.com', 'crunchbase.com', 'amazon.com',
-        'ebay.com', 'wikipedia.org', 'w3.org', 'github.com',
-        'stackoverflow.com', 'reddit.com', 'medium.com'
-      ];
-      
-      const isPlatform = platformDomains.includes(domain);
-      
-      if (isPlatform) {
-        console.log(`❌ Filtered out platform: ${domain}`);
-        return false;
-      }
-      
-      return true;
-    });
-    
-    // STEP 2: Find domains with strong company connections
-    const strongMatches = nonPlatformDomains.filter(item => {
+    const relevantDomains = validDomains.filter(item => {
       const domain = item.domain.toLowerCase();
       const context = item.context.toLowerCase();
       
-      // Strong match criteria
-      const domainHasMainWord = companyWords[0] && companyWords[0].length >= 3 && domain.includes(companyWords[0]);
-      const domainHasAnyWord = companyWords.some(word => word.length >= 3 && domain.includes(word));
+      // Check 1: Company word in domain
+      const domainHasCompanyWord = companyWords.some(word => {
+        if (word.length >= 2) {
+          return domain.includes(word);
+        }
+        return false;
+      });
+      
+      // Check 2: Company name in context
       const contextHasCompanyName = context.includes(companyLower);
-      const contextHasMultipleWords = companyWords.filter(word => word.length >= 3 && context.includes(word)).length >= 2;
-      const isEarlyResult = item.position <= 5;
       
-      const isStrong = domainHasMainWord || 
-                      (domainHasAnyWord && isEarlyResult) ||
-                      (contextHasCompanyName && isEarlyResult) ||
-                      contextHasMultipleWords;
+      // Check 3: Multiple company words in context
+      const contextWordMatches = companyWords.filter(word => 
+        word.length >= 2 && context.includes(word)
+      ).length;
       
-      if (isStrong) {
-        console.log(`✅ Strong match: ${domain} (${domainHasMainWord ? 'main-word' : ''} ${domainHasAnyWord ? 'any-word' : ''} ${contextHasCompanyName ? 'context-name' : ''} ${isEarlyResult ? 'early' : ''})`);
+      // Check 4: Abbreviation
+      const abbreviation = companyWords.filter(w => w.length > 2).map(w => w[0]).join('');
+      const hasAbbreviation = abbreviation.length >= 2 && domain.includes(abbreviation);
+      
+      // Check 5: Early position with any company connection
+      const isEarly = item.position <= 8;
+      const hasAnyConnection = domainHasCompanyWord || contextHasCompanyName || contextWordMatches >= 1;
+      
+      const isRelevant = domainHasCompanyWord || 
+                        contextHasCompanyName || 
+                        contextWordMatches >= 2 ||
+                        hasAbbreviation ||
+                        (isEarly && hasAnyConnection);
+      
+      if (isRelevant) {
+        console.log(`✅ Relevant: ${domain} (${domainHasCompanyWord ? 'domain-word' : ''} ${contextHasCompanyName ? 'context-name' : ''} ${contextWordMatches >= 2 ? 'multi-words' : ''})`);
       }
       
-      return isStrong;
+      return isRelevant;
     });
     
-    // STEP 3: If we have strong matches, use them. Otherwise, use top 10 by position
-    if (strongMatches.length > 0) {
-      console.log(`🎯 Using ${strongMatches.length} strong matches`);
-      return strongMatches.slice(0, 8); // Limit to top 8 for AI
-    } else {
-      console.log(`🔧 No strong matches, using top 10 by position`);
-      return nonPlatformDomains
-        .sort((a, b) => a.position - b.position)
-        .slice(0, 10);
-    }
+    console.log(`🔍 Company filter: ${relevantDomains.length} relevant domains`);
+    return relevantDomains.slice(0, 8);
   }
 
   async useOpenAIForFinalSelection(domains, companyName) {
-    console.log(`🤖 Using OpenAI 3.5 for final selection among ${domains.length} candidates`);
+    console.log(`🤖 OpenAI 3.5 final selection for: ${companyName}`);
     
     try {
       const OpenAI = require('openai');
       const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
       
-      // Compact domain list for cost efficiency
       const domainList = domains.map((item, index) => {
-        return `${index + 1}. ${item.domain} - ${item.context.substring(0, 80)}...`;
+        return `${index + 1}. ${item.domain} - ${item.context.substring(0, 100)}...`;
       }).join('\n');
       
       const prompt = `Company: "${companyName}"
-Domains found in Google search:
+Domains found in Google search (platforms already filtered out):
 ${domainList}
 
 Which domain is the actual official website for "${companyName}"?
 
-Rules:
+RULES:
 - Company name may be abbreviated (e.g., "IWS" for "International Widget Solutions")
 - Any TLD is valid (.com, .net, .org, .ai, .gov, etc.)
 - Look for the domain that clearly belongs to this specific company
-- Ignore platform domains
+- If NONE of these domains belong to "${companyName}", respond with "NONE"
 
 Respond with just the domain name or "NONE".`;
 
       const response = await openai.chat.completions.create({
-        model: "gpt-3.5-turbo", // FIXED: Using cost-optimized model
+        model: "gpt-3.5-turbo",
         messages: [{ role: "user", content: prompt }],
         temperature: 0.1,
         max_tokens: 50
@@ -222,7 +261,7 @@ Respond with just the domain name or "NONE".`;
         );
         
         if (matchingDomain) {
-          console.log(`🎯 OpenAI 3.5 selected: ${selectedDomain}`);
+          console.log(`🎯 OpenAI selected: ${selectedDomain}`);
           return selectedDomain;
         }
       }
@@ -231,11 +270,40 @@ Respond with just the domain name or "NONE".`;
       console.error('❌ OpenAI selection failed:', aiError.message);
     }
     
-    // Fallback: Return highest positioned domain
-    if (domains.length > 0) {
-      const fallbackDomain = domains.sort((a, b) => a.position - b.position)[0];
-      console.log(`🔧 Fallback: Using earliest domain: ${fallbackDomain.domain}`);
-      return fallbackDomain.domain;
+    // Fallback: Return domain with best company match
+    const fallbackDomain = this.selectFallbackDomain(domains, companyName);
+    return fallbackDomain;
+  }
+
+  selectFallbackDomain(domains, companyName) {
+    const companyWords = this.normalizeCompanyName(companyName);
+    
+    let bestDomain = null;
+    let bestScore = 0;
+    
+    domains.forEach(item => {
+      let score = 0;
+      const domain = item.domain.toLowerCase();
+      
+      // Score for company words in domain
+      companyWords.forEach(word => {
+        if (word.length >= 2 && domain.includes(word)) {
+          score += word.length * 10;
+        }
+      });
+      
+      // Bonus for early position
+      score += Math.max(0, 20 - item.position * 2);
+      
+      if (score > bestScore) {
+        bestScore = score;
+        bestDomain = item.domain;
+      }
+    });
+    
+    if (bestDomain && bestScore > 5) {
+      console.log(`🔧 Fallback selection: ${bestDomain} (${bestScore} points)`);
+      return bestDomain;
     }
     
     return null;
@@ -246,9 +314,7 @@ Respond with just the domain name or "NONE".`;
     const foundDomains = new Set();
     
     try {
-      console.log(`🔍 MAXIMUM COVERAGE domain extraction...`);
-      
-      // Strategy 1: All href links in order of appearance
+      // Extract from href links
       const hrefPattern = /<a[^>]+href="(https?:\/\/[^"]+)"[^>]*>(.*?)<\/a>/gi;
       let hrefMatch;
       let position = 1;
@@ -280,11 +346,10 @@ Respond with just the domain name or "NONE".`;
         }
       }
       
-      // Strategy 2: Domain mentions in text
+      // Extract from text mentions
       const visibleText = html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
       const textDomainPatterns = [
         /(?:^|\s)([a-zA-Z0-9-]+\.[a-zA-Z]{2,})(?=\s|$|\/|:)/g,
-        /(?:https?:\/\/)?(?:www\.)?([a-zA-Z0-9-]+\.[a-zA-Z]{2,})/g,
         /"([a-zA-Z0-9-]+\.[a-zA-Z]{2,})"/g,
         /\(([a-zA-Z0-9-]+\.[a-zA-Z]{2,})\)/g
       ];
@@ -297,11 +362,9 @@ Respond with just the domain name or "NONE".`;
           if (this.isValidDomain(domain) && !foundDomains.has(domain)) {
             foundDomains.add(domain);
             
-            const textContext = this.extractTextContextForDomain(visibleText, domain);
-            
             domains.push({
               domain: domain,
-              context: textContext,
+              context: this.extractTextContextForDomain(visibleText, domain),
               linkText: '',
               url: '',
               position: position++,
@@ -311,24 +374,11 @@ Respond with just the domain name or "NONE".`;
         }
       });
       
-      // Strategy 3: Meta tags
-      const metaDomains = this.extractFromMetaAndStructured(html);
-      metaDomains.forEach(domainInfo => {
-        if (!foundDomains.has(domainInfo.domain)) {
-          foundDomains.add(domainInfo.domain);
-          domains.push({
-            ...domainInfo,
-            position: position++,
-            source: 'meta'
-          });
-        }
-      });
-      
       console.log(`🔍 TOTAL EXTRACTED: ${domains.length} unique domains`);
       return domains;
       
     } catch (error) {
-      console.error('Maximum coverage extraction error:', error.message);
+      console.error('Domain extraction error:', error.message);
       return [];
     }
   }
@@ -338,8 +388,8 @@ Respond with just the domain name or "NONE".`;
       const urlIndex = html.indexOf(url);
       if (urlIndex === -1) return linkText;
       
-      const contextStart = Math.max(0, urlIndex - 400);
-      const contextEnd = Math.min(html.length, urlIndex + url.length + 400);
+      const contextStart = Math.max(0, urlIndex - 300);
+      const contextEnd = Math.min(html.length, urlIndex + url.length + 300);
       const rawContext = html.substring(contextStart, contextEnd);
       
       const cleanContext = rawContext
@@ -349,7 +399,7 @@ Respond with just the domain name or "NONE".`;
         .replace(/\s+/g, ' ')
         .trim();
       
-      return `${linkText} ${cleanContext}`.substring(0, 300);
+      return `${linkText} ${cleanContext}`.substring(0, 400);
       
     } catch (error) {
       return linkText;
@@ -369,45 +419,6 @@ Respond with just the domain name or "NONE".`;
     } catch (error) {
       return '';
     }
-  }
-
-  extractFromMetaAndStructured(html) {
-    const domains = [];
-    
-    try {
-      const metaPatterns = [
-        /<meta[^>]+property="og:url"[^>]+content="(https?:\/\/[^"]+)"/gi,
-        /<meta[^>]+name="twitter:domain"[^>]+content="([^"]+)"/gi,
-        /<link[^>]+rel="canonical"[^>]+href="(https?:\/\/[^"]+)"/gi
-      ];
-      
-      metaPatterns.forEach(pattern => {
-        let match;
-        while ((match = pattern.exec(html)) !== null) {
-          try {
-            const url = match[1];
-            const urlObj = new URL(url);
-            const domain = urlObj.hostname.replace(/^www\./, '').toLowerCase();
-            
-            if (this.isValidDomain(domain)) {
-              domains.push({
-                domain: domain,
-                context: 'Found in meta tags',
-                linkText: '',
-                url: url
-              });
-            }
-          } catch (error) {
-            // Skip invalid URLs
-          }
-        }
-      });
-      
-    } catch (error) {
-      console.error('Meta extraction error:', error.message);
-    }
-    
-    return domains;
   }
 
   isValidDomain(domain) {
@@ -444,7 +455,7 @@ Respond with just the domain name or "NONE".`;
       .filter(word => word.length > 1);
   }
 
-  // CEO finding methods (enhanced from your Python script)
+  // CEO finding methods
   async findCEO(domain, companyName) {
     console.log(`👔 Finding CEO: ${companyName} (${domain})`);
     
@@ -497,7 +508,6 @@ Respond with just the domain name or "NONE".`;
     const queries = [];
     
     if (company && company.trim()) {
-      // Primary queries with company name (from your Python version)
       queries.push(`CEO of ${company} ${domain}`);
       queries.push(`CEO of ${company}`);
       queries.push(`${company} leadership`);
@@ -505,7 +515,6 @@ Respond with just the domain name or "NONE".`;
       queries.push(`${company} president founder`);
       queries.push(`"${company}" CEO site:${domain}`);
     } else {
-      // Fallback queries when no company name
       queries.push(`CEO of ${domain}`);
       queries.push(`site:${domain} CEO`);
       queries.push(`${domain} chief executive`);
