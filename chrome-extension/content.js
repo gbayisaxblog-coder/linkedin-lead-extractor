@@ -452,10 +452,12 @@ async function sendLeadsToDatabase(leads, fileId, fileName) {
   try {
     console.log(`[CONTENT] 📤 Sending ${leads.length} NEW leads to database...`);
     
+    // ✅ SHORTER TIMEOUT with retry logic
     const response = await new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
+        console.error('[CONTENT] ❌ Database send timeout after 15 seconds');
         reject(new Error('Database send timeout'));
-      }, 30000);
+      }, 15000); // Reduced from 30s to 15s
       
       chrome.runtime.sendMessage({ 
         action: 'sendToDatabase', 
@@ -467,8 +469,15 @@ async function sendLeadsToDatabase(leads, fileId, fileName) {
         }
       }, (response) => {
         clearTimeout(timeout);
+        
+        console.log(`[CONTENT] 📡 Background response received:`, response);
+        
         if (chrome.runtime.lastError) {
+          console.error('[CONTENT] ❌ Chrome runtime error:', chrome.runtime.lastError);
           reject(new Error(chrome.runtime.lastError.message));
+        } else if (!response) {
+          console.error('[CONTENT] ❌ No response from background script');
+          reject(new Error('No response from background script'));
         } else {
           resolve(response);
         }
@@ -477,16 +486,91 @@ async function sendLeadsToDatabase(leads, fileId, fileName) {
     
     if (response && response.success) {
       const insertedCount = response.result.insertedCount || 0;
-      console.log(`[CONTENT] ✅ Database save successful: ${insertedCount} inserted`);
+      const skippedCount = response.result.skippedCount || 0;
+      console.log(`[CONTENT] ✅ Database save successful: ${insertedCount} inserted, ${skippedCount} skipped`);
       return insertedCount;
     } else {
       console.error(`[CONTENT] ❌ Database save failed:`, response?.error);
-      return 0;
+      
+      // ✅ RETRY LOGIC: Try once more if first attempt fails
+      console.log(`[CONTENT] 🔄 Retrying database save for ${leads.length} leads...`);
+      
+      try {
+        const retryResponse = await new Promise((resolve, reject) => {
+          const retryTimeout = setTimeout(() => {
+            reject(new Error('Retry timeout'));
+          }, 10000); // Shorter retry timeout
+          
+          chrome.runtime.sendMessage({ 
+            action: 'sendToDatabase', 
+            payload: {
+              leads: leads,
+              fileId: fileId,
+              fileName: fileName,
+              userId: 'chrome_extension_user_retry'
+            }
+          }, (response) => {
+            clearTimeout(retryTimeout);
+            if (chrome.runtime.lastError) {
+              reject(new Error(chrome.runtime.lastError.message));
+            } else {
+              resolve(response);
+            }
+          });
+        });
+        
+        if (retryResponse && retryResponse.success) {
+          const retryInserted = retryResponse.result.insertedCount || 0;
+          console.log(`[CONTENT] ✅ Retry successful: ${retryInserted} inserted`);
+          return retryInserted;
+        } else {
+          console.error(`[CONTENT] ❌ Retry also failed:`, retryResponse?.error);
+          return 0;
+        }
+      } catch (retryError) {
+        console.error(`[CONTENT] ❌ Retry error:`, retryError.message);
+        return 0;
+      }
     }
     
   } catch (error) {
     console.error('[CONTENT] ❌ Database send error:', error);
-    return 0;
+    
+    // ✅ FALLBACK: Try one more time with different approach
+    console.log(`[CONTENT] 🔄 Final fallback attempt for ${leads.length} leads...`);
+    
+    try {
+      const fallbackResponse = await new Promise((resolve, reject) => {
+        const fallbackTimeout = setTimeout(() => {
+          reject(new Error('Fallback timeout'));
+        }, 5000); // Very short timeout for fallback
+        
+        chrome.runtime.sendMessage({ 
+          action: 'sendToDatabase', 
+          payload: {
+            leads: leads.slice(0, 10), // Send only first 10 leads as fallback
+            fileId: fileId,
+            fileName: fileName,
+            userId: 'chrome_extension_fallback'
+          }
+        }, (response) => {
+          clearTimeout(fallbackTimeout);
+          resolve(response || { success: false });
+        });
+      });
+      
+      if (fallbackResponse && fallbackResponse.success) {
+        const fallbackInserted = fallbackResponse.result.insertedCount || 0;
+        console.log(`[CONTENT] ✅ Fallback successful: ${fallbackInserted} inserted`);
+        return fallbackInserted;
+      } else {
+        console.error(`[CONTENT] ❌ All attempts failed for ${leads.length} leads`);
+        return 0;
+      }
+    } catch (fallbackError) {
+      console.error(`[CONTENT] ❌ Final fallback failed:`, fallbackError.message);
+      return 0;
+    }
   }
 }
 
