@@ -1,15 +1,22 @@
-// utils/queue.js - COMPLETE FIXED VERSION
+// utils/queue.js - FIXED VERSION WITH PROPER EXPORTS
 const { Queue, Worker } = require('bullmq');
 const Redis = require('ioredis');
 
-let redisConnection;
-let domainQueue;
-let ceoQueue;
-let emailQueue;
+// Global variables to store queue instances
+let redisConnection = null;
+let domainQueue = null;
+let ceoQueue = null;
+let emailQueue = null;
+let initialized = false;
 
 async function initializeQueues() {
   try {
     console.log('🔄 Initializing Redis and queues...');
+    
+    if (initialized) {
+      console.log('✅ Queues already initialized');
+      return;
+    }
     
     // Create Redis connection using Railway environment variable
     redisConnection = new Redis(process.env.REDIS_URL, {
@@ -62,7 +69,11 @@ async function initializeQueues() {
       }
     });
     
+    initialized = true;
     console.log('✅ All queues initialized successfully');
+    console.log('✅ Domain queue created:', !!domainQueue);
+    console.log('✅ CEO queue created:', !!ceoQueue);
+    console.log('✅ Email queue created:', !!emailQueue);
     
   } catch (error) {
     console.error('❌ Queue initialization error:', error);
@@ -73,6 +84,10 @@ async function initializeQueues() {
 async function startWorkers() {
   try {
     console.log('🔄 Starting queue workers...');
+    
+    if (!initialized || !domainQueue || !ceoQueue || !emailQueue) {
+      throw new Error('Queues not initialized before starting workers');
+    }
     
     // Domain finding worker
     const domainWorker = new Worker('domain-finding', async (job) => {
@@ -167,7 +182,7 @@ async function startWorkers() {
 // Add queue monitoring functions
 async function getQueueStats() {
   try {
-    if (!domainQueue || !ceoQueue) {
+    if (!initialized || !domainQueue || !ceoQueue) {
       return { error: 'Queues not initialized' };
     }
     
@@ -186,6 +201,7 @@ async function getQueueStats() {
     };
     
     return {
+      initialized,
       domain: domainStats,
       ceo: ceoStats,
       timestamp: new Date().toISOString()
@@ -196,12 +212,34 @@ async function getQueueStats() {
   }
 }
 
+// Getter functions to ensure we always return current queue instances
+function getDomainQueue() {
+  console.log('🔍 getDomainQueue called, initialized:', initialized, 'domainQueue exists:', !!domainQueue);
+  return domainQueue;
+}
+
+function getCeoQueue() {
+  console.log('🔍 getCeoQueue called, initialized:', initialized, 'ceoQueue exists:', !!ceoQueue);
+  return ceoQueue;
+}
+
+function getEmailQueue() {
+  console.log('🔍 getEmailQueue called, initialized:', initialized, 'emailQueue exists:', !!emailQueue);
+  return emailQueue;
+}
+
+// Export everything including getter functions
 module.exports = {
   initializeQueues,
   startWorkers,
   getQueueStats,
-  domainQueue,
-  ceoQueue,
-  emailQueue,
-  redisConnection
+  getDomainQueue,
+  getCeoQueue,
+  getEmailQueue,
+  // Direct exports (may be null until initialized)
+  get domainQueue() { return domainQueue; },
+  get ceoQueue() { return ceoQueue; },
+  get emailQueue() { return emailQueue; },
+  get redisConnection() { return redisConnection; },
+  get initialized() { return initialized; }
 };
