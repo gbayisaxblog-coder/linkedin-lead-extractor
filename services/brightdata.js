@@ -1,4 +1,4 @@
-// services/brightdata.js - ULTRA-ACCURATE DOMAIN FINDING
+// services/brightdata.js - ULTIMATE OPENAI-POWERED DOMAIN FINDING
 const axios = require('axios');
 
 class BrightDataService {
@@ -20,26 +20,15 @@ class BrightDataService {
         return null;
       }
       
-      const allDomains = this.extractAllDomainsWithContext(searchResults, companyName);
+      // ULTIMATE STRATEGY: Extract EVERYTHING, let OpenAI decide
+      const domain = await this.findDomainWithOpenAIIntelligence(searchResults, companyName);
       
-      if (allDomains.length === 0) {
-        console.log(`❌ No domains found in search results for: ${companyName}`);
-        return null;
+      if (domain) {
+        console.log(`✅ Domain found: ${companyName} → ${domain}`);
+        return domain;
       }
       
-      console.log(`🔍 Found ${allDomains.length} potential domains for ${companyName}:`);
-      allDomains.forEach((d, i) => {
-        console.log(`  ${i + 1}. ${d.domain} - "${d.context.title}" (pos: ${d.context.position})`);
-      });
-      
-      const actualDomain = await this.selectActualCompanyDomain(allDomains, companyName);
-      
-      if (actualDomain) {
-        console.log(`✅ Actual domain selected: ${companyName} → ${actualDomain}`);
-        return actualDomain;
-      }
-      
-      console.log(`❌ Could not determine actual domain for: ${companyName}`);
+      console.log(`❌ No domain found for: ${companyName}`);
       return null;
       
     } catch (error) {
@@ -86,526 +75,399 @@ class BrightDataService {
     }
   }
 
-  extractAllDomainsWithContext(html, companyName) {
-    const domainsWithContext = [];
+  async findDomainWithOpenAIIntelligence(html, companyName) {
+    console.log(`🤖 OPENAI INTELLIGENCE for: ${companyName}`);
     
     try {
-      // ENHANCED: Extract domains from multiple sources
+      // STEP 1: Extract ALL possible domains with maximum coverage
+      const allDomains = this.extractEveryPossibleDomain(html);
       
-      // Method 1: Extract from search result blocks
-      const resultBlocks = this.extractSearchResultBlocks(html);
-      console.log(`🔍 Extracted ${resultBlocks.length} search result blocks`);
+      if (allDomains.length === 0) {
+        console.log(`❌ No domains extracted from search results`);
+        return null;
+      }
       
-      resultBlocks.forEach((block, index) => {
-        const domains = this.extractDomainsFromBlock(block);
+      console.log(`🔍 Extracted ${allDomains.length} total domains:`);
+      allDomains.slice(0, 15).forEach((d, i) => {
+        console.log(`  ${i + 1}. ${d.domain} - "${d.context.substring(0, 80)}..."`);
+      });
+      
+      // STEP 2: Filter out only the most obvious platform domains (minimal filtering)
+      const filteredDomains = allDomains.filter(item => {
+        const domain = item.domain.toLowerCase();
         
-        domains.forEach(domain => {
-          domainsWithContext.push({
-            domain: domain,
-            context: {
-              title: block.title || '',
-              description: block.description || '',
-              fullText: block.fullText || '',
-              position: index + 1,
-              source: 'result_block'
-            }
-          });
-        });
+        // Only exclude the most obvious Google domains
+        const obviousGoogleDomains = [
+          'google.com', 'youtube.com', 'maps.google.com', 'translate.google.com',
+          'support.google.com', 'accounts.google.com'
+        ];
+        
+        const isObviousGoogle = obviousGoogleDomains.some(gDomain => domain === gDomain);
+        
+        if (isObviousGoogle) {
+          console.log(`❌ Excluded obvious Google domain: ${domain}`);
+          return false;
+        }
+        
+        return true;
       });
       
-      // Method 2: Extract directly from href attributes (catch more domains)
-      const hrefDomains = this.extractDomainsFromHrefs(html);
-      hrefDomains.forEach((domainInfo, index) => {
-        domainsWithContext.push({
-          domain: domainInfo.domain,
-          context: {
-            title: domainInfo.linkText || '',
-            description: '',
-            fullText: domainInfo.context || '',
-            position: index + 1,
-            source: 'href_direct'
-          }
-        });
-      });
+      console.log(`🔍 After minimal filtering: ${filteredDomains.length} domains for OpenAI analysis`);
       
-      // Method 3: Extract from plain text mentions
-      const textDomains = this.extractDomainsFromPlainText(html);
-      textDomains.forEach((domain, index) => {
-        domainsWithContext.push({
-          domain: domain,
-          context: {
-            title: '',
-            description: '',
-            fullText: '',
-            position: index + 20, // Lower priority
-            source: 'plain_text'
-          }
-        });
-      });
+      if (filteredDomains.length === 0) {
+        console.log(`❌ No domains left after filtering`);
+        return null;
+      }
       
-      const uniqueDomains = this.deduplicateDomainsWithBestContext(domainsWithContext);
-      console.log(`🔍 Found ${uniqueDomains.length} unique domains with context`);
+      // STEP 3: Let OpenAI make the intelligent decision
+      const selectedDomain = await this.useOpenAIForIntelligentDomainSelection(filteredDomains, companyName);
       
-      return uniqueDomains;
+      return selectedDomain;
       
     } catch (error) {
-      console.error('Domain extraction error:', error.message);
-      return [];
+      console.error('OpenAI intelligence error:', error.message);
+      return null;
     }
   }
 
-  extractDomainsFromHrefs(html) {
+  extractEveryPossibleDomain(html) {
     const domains = [];
+    const foundDomains = new Set();
     
     try {
-      // Extract all href links with their context
-      const hrefPattern = /<a[^>]+href="(https?:\/\/[^"]+)"[^>]*>(.*?)<\/a>/gi;
-      let match;
+      console.log(`🔍 MAXIMUM COVERAGE domain extraction...`);
       
-      while ((match = hrefPattern.exec(html)) !== null) {
-        const url = match[1];
-        const linkText = this.cleanText(match[2]);
-        
+      // Strategy 1: All href links (most reliable source)
+      const hrefPattern = /<a[^>]+href="(https?:\/\/[^"]+)"[^>]*>(.*?)<\/a>/gi;
+      let hrefMatch;
+      let position = 1;
+      
+      while ((hrefMatch = hrefPattern.exec(html)) !== null) {
         try {
+          const url = hrefMatch[1];
+          const linkText = this.cleanText(hrefMatch[2]);
+          
           const urlObj = new URL(url);
           const domain = urlObj.hostname.replace(/^www\./, '').toLowerCase();
           
-          if (this.isValidDomain(domain) && this.isNotExcludedDomain(domain)) {
+          if (this.isValidDomain(domain) && !foundDomains.has(domain)) {
+            foundDomains.add(domain);
+            
+            // Get rich context around this domain
+            const richContext = this.extractRichContextForDomain(html, domain, linkText, url);
+            
             domains.push({
               domain: domain,
+              context: richContext,
               linkText: linkText,
-              context: linkText
+              url: url,
+              position: position++,
+              source: 'href'
             });
+            
+            console.log(`  ${domains.length}. ${domain} - "${linkText.substring(0, 50)}..."`);
           }
         } catch (urlError) {
           // Skip invalid URLs
         }
       }
       
-      console.log(`🔍 Extracted ${domains.length} domains from hrefs`);
+      // Strategy 2: Domain mentions in visible text
+      const visibleText = html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
+      const textDomainPatterns = [
+        // Standard domain pattern
+        /(?:^|\s)([a-zA-Z0-9-]+\.[a-zA-Z]{2,})(?=\s|$|\/|:)/g,
+        // Domain with protocol mentions
+        /(?:https?:\/\/)?(?:www\.)?([a-zA-Z0-9-]+\.[a-zA-Z]{2,})/g,
+        // Quoted domains
+        /"([a-zA-Z0-9-]+\.[a-zA-Z]{2,})"/g,
+        // Parentheses domains
+        /\(([a-zA-Z0-9-]+\.[a-zA-Z]{2,})\)/g
+      ];
+      
+      textDomainPatterns.forEach(pattern => {
+        let textMatch;
+        while ((textMatch = pattern.exec(visibleText)) !== null) {
+          const domain = textMatch[1].toLowerCase().trim();
+          
+          if (this.isValidDomain(domain) && !foundDomains.has(domain)) {
+            foundDomains.add(domain);
+            
+            const textContext = this.extractTextContextForDomain(visibleText, domain);
+            
+            domains.push({
+              domain: domain,
+              context: textContext,
+              linkText: '',
+              url: '',
+              position: position++,
+              source: 'text'
+            });
+            
+            console.log(`  ${domains.length}. ${domain} (from text)`);
+          }
+        }
+      });
+      
+      // Strategy 3: Extract from meta tags and structured data
+      const metaDomains = this.extractFromMetaAndStructured(html);
+      metaDomains.forEach(domainInfo => {
+        if (!foundDomains.has(domainInfo.domain)) {
+          foundDomains.add(domainInfo.domain);
+          domains.push({
+            ...domainInfo,
+            position: position++,
+            source: 'meta'
+          });
+          
+          console.log(`  ${domains.length}. ${domainInfo.domain} (from meta)`);
+        }
+      });
+      
+      console.log(`🔍 TOTAL EXTRACTED: ${domains.length} unique domains`);
       return domains;
       
     } catch (error) {
-      console.error('Href domain extraction error:', error.message);
+      console.error('Maximum coverage extraction error:', error.message);
       return [];
     }
   }
 
-  extractDomainsFromPlainText(html) {
-    const domains = new Set();
-    
+  extractRichContextForDomain(html, domain, linkText, url) {
     try {
-      // Remove HTML tags to get plain text
-      const plainText = html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
+      // Find the position of this URL in the HTML
+      const urlIndex = html.indexOf(url);
+      if (urlIndex === -1) return linkText;
       
-      // Look for domain patterns in plain text
-      const domainPattern = /(?:^|\s)((?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,})(?=\s|$|\/|:)/g;
-      let match;
+      // Extract a large context window around the URL
+      const contextStart = Math.max(0, urlIndex - 800);
+      const contextEnd = Math.min(html.length, urlIndex + url.length + 800);
+      const rawContext = html.substring(contextStart, contextEnd);
       
-      while ((match = domainPattern.exec(plainText)) !== null) {
-        const domain = match[1].toLowerCase().trim();
-        
-        if (this.isValidDomain(domain) && this.isNotExcludedDomain(domain)) {
-          domains.add(domain);
-        }
-      }
+      // Clean the context and make it readable
+      const cleanContext = rawContext
+        .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+        .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
       
-      console.log(`🔍 Extracted ${domains.size} domains from plain text`);
-      return Array.from(domains);
+      // Combine link text with surrounding context
+      const fullContext = `${linkText} ${cleanContext}`.substring(0, 500);
+      
+      return fullContext;
       
     } catch (error) {
-      console.error('Plain text domain extraction error:', error.message);
-      return [];
+      return linkText;
     }
   }
 
-  extractSearchResultBlocks(html) {
-    const blocks = [];
+  extractTextContextForDomain(text, domain) {
+    try {
+      // Find context around domain mentions in text
+      const domainIndex = text.toLowerCase().indexOf(domain);
+      if (domainIndex === -1) return '';
+      
+      const start = Math.max(0, domainIndex - 150);
+      const end = Math.min(text.length, domainIndex + domain.length + 150);
+      
+      return text.substring(start, end).trim();
+      
+    } catch (error) {
+      return '';
+    }
+  }
+
+  extractFromMetaAndStructured(html) {
+    const domains = [];
     
     try {
-      // ENHANCED: Better patterns to capture Google search results
-      const resultPatterns = [
-        // Main search results
-        /<div[^>]*class="[^"]*g[^"]*"[^>]*>([\s\S]*?)<\/div>/gi,
-        // Organic results
-        /<div[^>]*data-ved="[^"]*"[^>]*>([\s\S]*?)<\/div>/gi,
-        // Modern Google results
-        /<div[^>]*jscontroller[^>]*>([\s\S]*?)<\/div>/gi,
-        // Alternative result containers
-        /<div[^>]*class="[^"]*result[^"]*"[^>]*>([\s\S]*?)<\/div>/gi,
-        // Search result items
-        /<div[^>]*class="[^"]*srp[^"]*"[^>]*>([\s\S]*?)<\/div>/gi
+      // Extract from meta tags
+      const metaPatterns = [
+        /<meta[^>]+property="og:url"[^>]+content="(https?:\/\/[^"]+)"/gi,
+        /<meta[^>]+name="twitter:domain"[^>]+content="([^"]+)"/gi,
+        /<link[^>]+rel="canonical"[^>]+href="(https?:\/\/[^"]+)"/gi
       ];
       
-      let allMatches = [];
-      resultPatterns.forEach(pattern => {
-        const matches = html.match(pattern) || [];
-        allMatches = allMatches.concat(matches);
-      });
-      
-      console.log(`🔍 Found ${allMatches.length} potential result blocks`);
-      
-      allMatches.forEach((match, index) => {
-        const block = {
-          title: this.extractTitle(match),
-          description: this.extractDescription(match),
-          fullText: this.extractVisibleText(match)
-        };
-        
-        // More lenient criteria for including blocks
-        if (block.title || block.description || block.fullText.length > 15) {
-          blocks.push(block);
+      metaPatterns.forEach(pattern => {
+        let match;
+        while ((match = pattern.exec(html)) !== null) {
+          try {
+            const url = match[1];
+            const urlObj = new URL(url);
+            const domain = urlObj.hostname.replace(/^www\./, '').toLowerCase();
+            
+            if (this.isValidDomain(domain)) {
+              domains.push({
+                domain: domain,
+                context: 'Found in meta tags',
+                linkText: '',
+                url: url
+              });
+            }
+          } catch (error) {
+            // Skip invalid URLs
+          }
         }
       });
-      
-      console.log(`🔍 Created ${blocks.length} valid blocks`);
       
     } catch (error) {
-      console.error('Block extraction error:', error.message);
+      console.error('Meta extraction error:', error.message);
     }
     
-    return blocks.slice(0, 30); // Increased to capture more results
+    return domains;
   }
 
-  extractDomainsFromBlock(block) {
-    const domains = new Set();
-    const text = `${block.title} ${block.description} ${block.fullText}`;
+  async useOpenAIForIntelligentDomainSelection(domains, companyName) {
+    console.log(`🤖 Using OpenAI to intelligently select domain for: ${companyName}`);
     
-    // ENHANCED: More comprehensive domain extraction patterns
-    const domainPatterns = [
-      // HTTP/HTTPS URLs
-      /https?:\/\/(www\.)?([a-zA-Z0-9-]+\.[a-zA-Z]{2,})/g,
-      // Domains with word boundaries
-      /(?:^|\s)((?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,})(?=\s|$|\/|:|,|\)|;)/g,
-      // Href attributes
-      /href=["'](https?:\/\/[^"'\/]+)/g,
-      // Direct domain mentions
-      /(?:www\.)?([a-zA-Z0-9-]+\.[a-zA-Z]{2,})(?=\/|\s|$|,|\)|;)/g,
-      // URL parameters
-      /url=([a-zA-Z0-9-]+\.[a-zA-Z]{2,})/g,
-      // Domain mentions in text
-      /\b([a-zA-Z0-9-]+\.[a-zA-Z]{2,})\b/g
-    ];
-    
-    console.log(`🔍 Extracting domains from block with title: "${block.title}"`);
-    
-    domainPatterns.forEach((pattern, patternIndex) => {
-      let match;
-      const patternDomains = [];
+    try {
+      const OpenAI = require('openai');
+      const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
       
-      while ((match = pattern.exec(text)) !== null) {
-        try {
-          let domain = match[2] || match[1];
-          if (domain) {
-            domain = domain.replace(/^www\./, '').toLowerCase().trim();
-            domain = domain.split('/')[0].split('?')[0]; // Remove paths and params
-            
-            if (this.isValidDomain(domain) && this.isNotExcludedDomain(domain)) {
-              domains.add(domain);
-              patternDomains.push(domain);
-            }
+      // Prepare comprehensive domain analysis for OpenAI
+      const domainAnalysis = domains.slice(0, 15).map((item, index) => {
+        return `${index + 1}. Domain: ${item.domain}
+   Context: ${item.context}
+   Link Text: ${item.linkText}
+   Source: ${item.source}
+   Position: ${item.position}`;
+      }).join('\n\n');
+      
+      const prompt = `You are analyzing Google search results to find the actual official website domain for the company "${companyName}".
+
+Company Name: "${companyName}"
+
+Here are ALL the domains found in the search results with their context:
+
+${domainAnalysis}
+
+Your task is to identify which domain is the ACTUAL official website for "${companyName}".
+
+IMPORTANT GUIDELINES:
+1. The company name might appear abbreviated, shortened, or in different forms in the domain (e.g., "IWS" for "International Widget Solutions")
+2. Look for domains that clearly belong to this specific company based on context
+3. Consider context clues like "official website", company descriptions, etc.
+4. ANY TLD is valid (.com, .net, .org, .co.uk, .gov, .ai, etc.)
+5. Short domain names can be valid (e.g., "iws.com" for "International Widget Solutions")
+6. Ignore platform domains like LinkedIn, Facebook, Crunchbase, Wikipedia, Amazon, eBay
+7. The official domain might not be the first result - read all contexts carefully
+8. Look for domains mentioned in company descriptions or official contexts
+9. If multiple domains seem valid, pick the most official-looking one
+10. If NONE of these domains actually belong to "${companyName}", respond with "NONE"
+
+Respond with ONLY the domain name (e.g., "microsoft.com" or "iws.com") or "NONE" if no actual company domain is found.`;
+
+      const response = await openai.chat.completions.create({
+        model: "gpt-4", // Using GPT-4 for maximum intelligence
+        messages: [{ role: "user", content: prompt }],
+        temperature: 0.1,
+        max_tokens: 100
+      });
+
+      const selectedDomain = response.choices[0].message.content?.trim().toLowerCase();
+      
+      if (selectedDomain && selectedDomain !== 'none') {
+        // Verify the selected domain exists in our candidates
+        const matchingDomain = domains.find(item => 
+          item.domain.toLowerCase() === selectedDomain
+        );
+        
+        if (matchingDomain) {
+          console.log(`🎯 OpenAI selected actual company domain: ${selectedDomain}`);
+          console.log(`🔍 Context: ${matchingDomain.context.substring(0, 100)}...`);
+          return selectedDomain;
+        } else {
+          console.log(`⚠️ OpenAI selected domain not in candidates: ${selectedDomain}`);
+          
+          // Check if it's a close match (case sensitivity, www prefix, etc.)
+          const closeMatch = domains.find(item => {
+            const itemDomain = item.domain.toLowerCase();
+            const selectedLower = selectedDomain.toLowerCase();
+            return itemDomain === selectedLower || 
+                   itemDomain === `www.${selectedLower}` ||
+                   `www.${itemDomain}` === selectedLower;
+          });
+          
+          if (closeMatch) {
+            console.log(`✅ Found close match: ${closeMatch.domain}`);
+            return closeMatch.domain;
           }
-        } catch (error) {
-          // Skip invalid domains
         }
+      } else {
+        console.log(`❌ OpenAI determined no actual company domain exists for: ${companyName}`);
       }
       
-      if (patternDomains.length > 0) {
-        console.log(`  Pattern ${patternIndex + 1} found: ${patternDomains.join(', ')}`);
+    } catch (aiError) {
+      console.error('❌ OpenAI domain analysis failed:', aiError.message);
+      
+      // Fallback: Use intelligent scoring without AI
+      return this.fallbackIntelligentSelection(domains, companyName);
+    }
+    
+    return null;
+  }
+
+  fallbackIntelligentSelection(domains, companyName) {
+    console.log(`🔧 Using intelligent fallback for: ${companyName}`);
+    
+    const companyWords = this.normalizeCompanyName(companyName);
+    let bestMatch = null;
+    let bestScore = 0;
+    
+    domains.forEach(item => {
+      let score = 0;
+      const domain = item.domain.toLowerCase();
+      const context = item.context.toLowerCase();
+      
+      // Massive penalty for platform domains
+      const platformDomains = ['linkedin.com', 'facebook.com', 'crunchbase.com', 'amazon.com', 'ebay.com'];
+      if (platformDomains.includes(domain)) {
+        score -= 1000;
+        return;
+      }
+      
+      // Score for company words in domain
+      companyWords.forEach(word => {
+        if (word.length >= 2 && domain.includes(word)) {
+          score += word.length * 20;
+        }
+      });
+      
+      // Score for company name in context
+      if (context.includes(companyName.toLowerCase())) {
+        score += 100;
+      }
+      
+      // Score for position (earlier is better)
+      score += Math.max(0, 30 - item.position * 2);
+      
+      if (score > bestScore) {
+        bestScore = score;
+        bestMatch = item;
       }
     });
     
-    const domainArray = Array.from(domains);
-    console.log(`🔍 Block extracted ${domainArray.length} domains: ${domainArray.join(', ')}`);
+    if (bestMatch && bestScore > 10) {
+      console.log(`🎯 Fallback selection: ${bestMatch.domain} (${bestScore} points)`);
+      return bestMatch.domain;
+    }
     
-    return domainArray;
+    return null;
   }
 
   isValidDomain(domain) {
-    // More comprehensive domain validation
     if (!domain || typeof domain !== 'string') return false;
     
     return domain.includes('.') && 
-           domain.length > 3 && 
+           domain.length > 2 && // Allow very short domains like "ai.com"
            domain.length < 100 &&
            /^[a-zA-Z0-9.-]+$/.test(domain) &&
            !domain.startsWith('.') &&
            !domain.endsWith('.') &&
            !domain.includes('..') &&
            /\.[a-zA-Z]{2,}$/.test(domain) &&
-           // Must have at least one letter (not just numbers)
            /[a-zA-Z]/.test(domain);
-  }
-
-  isNotExcludedDomain(domain) {
-    // FIXED: More comprehensive exclusion list
-    const excludeDomains = [
-      'google.com', 'youtube.com', 'facebook.com', 'twitter.com', 
-      'instagram.com', 'tiktok.com', 'snapchat.com', 'linkedin.com',
-      'w3.org', 'wikipedia.org', 'github.com', 'stackoverflow.com',
-      'reddit.com', 'quora.com', 'medium.com', 'wordpress.com',
-      'blogspot.com', 'tumblr.com', 'pinterest.com', 'maps.google.com',
-      'support.google.com', 'accounts.google.com', 'policies.google.com',
-      'translate.google.com', 'scholar.google.com'
-    ];
-    
-    return !excludeDomains.some(excluded => domain === excluded || domain.endsWith('.' + excluded));
-  }
-
-  async selectActualCompanyDomain(domainsWithContext, companyName) {
-    console.log(`🤖 Analyzing ${domainsWithContext.length} domains for: ${companyName}`);
-    
-    // STEP 1: Remove obviously wrong domains
-    const cleanDomains = domainsWithContext.filter(item => {
-      const domain = item.domain.toLowerCase();
-      
-      const badDomains = ['w3.org', 'wikipedia.org', 'linkedin.com', 'facebook.com', 'twitter.com', 'github.com'];
-      const isBad = badDomains.includes(domain);
-      
-      if (isBad) {
-        console.log(`❌ EXCLUDED bad domain: ${domain}`);
-        return false;
-      }
-      
-      return true;
-    });
-    
-    console.log(`🔍 After removing bad domains: ${cleanDomains.length} domains remain`);
-    
-    if (cleanDomains.length === 0) {
-      console.log(`❌ No domains left after removing bad ones`);
-      return null;
-    }
-    
-    // STEP 2: Score all domains with enhanced algorithm
-    const scoredDomains = cleanDomains.map(item => {
-      const score = this.calculateEnhancedDomainScore(item, companyName);
-      return { ...item, relevanceScore: score };
-    }).sort((a, b) => b.relevanceScore - a.relevanceScore);
-    
-    console.log(`🔍 TOP SCORED DOMAINS:`);
-    scoredDomains.slice(0, 5).forEach((item, i) => {
-      console.log(`  ${i + 1}. ${item.domain} = ${item.relevanceScore} points (${item.context.title})`);
-    });
-    
-    // STEP 3: If we have a clear winner (high score), use it
-    const topDomain = scoredDomains[0];
-    if (topDomain && topDomain.relevanceScore > 15) {
-      console.log(`✅ CLEAR WINNER: ${topDomain.domain} (${topDomain.relevanceScore} points)`);
-      return topDomain.domain;
-    }
-    
-    // STEP 4: Use AI for close decisions
-    const topCandidates = scoredDomains.filter(d => d.relevanceScore > 5).slice(0, 5);
-    
-    if (topCandidates.length === 0) {
-      console.log(`❌ No domains scored above minimum threshold`);
-      return null;
-    }
-    
-    if (topCandidates.length === 1) {
-      console.log(`✅ Only one candidate above threshold: ${topCandidates[0].domain}`);
-      return topCandidates[0].domain;
-    }
-    
-    try {
-      const OpenAI = require('openai');
-      const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-      
-      const domainList = topCandidates.map((item, i) => 
-        `${i + 1}. ${item.domain} (Score: ${item.relevanceScore}) - "${item.context.title}"`
-      ).join('\n');
-      
-      const prompt = `Company: "${companyName}"
-Top domain candidates:
-${domainList}
-
-Which domain belongs to "${companyName}"? Look for:
-- Exact company name matches
-- Company abbreviations (e.g., "Meketa" for "Meketa Investment Group")
-- Official company websites
-
-Respond with just the domain name or "NONE".`;
-
-      const response = await openai.chat.completions.create({
-        model: "gpt-3.5-turbo",
-        messages: [{ role: "user", content: prompt }],
-        temperature: 0.1,
-        max_tokens: 50
-      });
-
-      const selectedDomain = response.choices[0].message.content?.trim().toLowerCase();
-      
-      if (selectedDomain && selectedDomain !== 'none') {
-        const matchingDomain = topCandidates.find(item => 
-          item.domain.toLowerCase() === selectedDomain
-        );
-        
-        if (matchingDomain) {
-          console.log(`🎯 AI selected: ${selectedDomain}`);
-          return selectedDomain;
-        }
-      }
-      
-    } catch (aiError) {
-      console.error('❌ AI domain selection failed:', aiError.message);
-    }
-    
-    // STEP 5: Final fallback - return highest scoring domain
-    if (topCandidates.length > 0) {
-      console.log(`🎯 Final fallback: ${topCandidates[0].domain} (${topCandidates[0].relevanceScore} points)`);
-      return topCandidates[0].domain;
-    }
-    
-    return null;
-  }
-
-  calculateEnhancedDomainScore(domainWithContext, companyName) {
-    let score = 0;
-    const { domain, context } = domainWithContext;
-    const domainLower = domain.toLowerCase();
-    const fullContext = `${context.title} ${context.description} ${context.fullText}`.toLowerCase();
-    
-    console.log(`🔍 SCORING: ${domain}`);
-    
-    // MASSIVE penalty for obviously wrong domains
-    const badDomains = ['w3.org', 'wikipedia.org', 'linkedin.com', 'facebook.com', 'twitter.com', 'github.com', 'stackoverflow.com'];
-    if (badDomains.includes(domainLower)) {
-      score = -1000;
-      console.log(`  PENALTY: -1000 for bad domain`);
-      return score;
-    }
-    
-    // Normalize company name for matching
-    const companyWords = this.normalizeCompanyName(companyName);
-    const companyLower = companyName.toLowerCase();
-    
-    // HUGE bonus for exact company name match in domain
-    const mainCompanyWord = companyWords[0]; // First word usually most important
-    if (mainCompanyWord && domainLower.includes(mainCompanyWord)) {
-      score += 100;
-      console.log(`  +100 for main company word "${mainCompanyWord}" in domain`);
-    }
-    
-    // Score for each company word in domain
-    companyWords.forEach(word => {
-      if (word.length >= 3 && domainLower.includes(word)) {
-        const wordScore = word.length * 15; // Increased multiplier
-        score += wordScore;
-        console.log(`  +${wordScore} for word "${word}" in domain`);
-      }
-    });
-    
-    // HUGE bonus for exact company name in context
-    if (fullContext.includes(companyLower)) {
-      score += 80;
-      console.log(`  +80 for exact company name in context`);
-    }
-    
-    // Score for company words in context
-    companyWords.forEach(word => {
-      if (word.length >= 3 && fullContext.includes(word)) {
-        score += 8;
-        console.log(`  +8 for word "${word}" in context`);
-      }
-    });
-    
-    // MASSIVE bonus for position 1 (first result)
-    if (context.position === 1) {
-      score += 50;
-      console.log(`  +50 for being first result`);
-    } else {
-      const positionBonus = Math.max(0, 25 - context.position * 2);
-      score += positionBonus;
-      console.log(`  +${positionBonus} for position ${context.position}`);
-    }
-    
-    // Bonus for official indicators
-    const officialIndicators = ['official', 'website', 'homepage', 'corporate', 'company site'];
-    officialIndicators.forEach(indicator => {
-      if (fullContext.includes(indicator)) {
-        score += 15;
-        console.log(`  +15 for official indicator "${indicator}"`);
-      }
-    });
-    
-    // Bonus for reasonable domain length
-    if (domain.length < 25) {
-      score += 10;
-      console.log(`  +10 for reasonable length`);
-    } else if (domain.length > 40) {
-      score -= 15;
-      console.log(`  -15 for very long domain`);
-    }
-    
-    // Bonus for common business TLDs
-    if (domain.endsWith('.com')) {
-      score += 8;
-      console.log(`  +8 for .com TLD`);
-    } else if (domain.endsWith('.net') || domain.endsWith('.org')) {
-      score += 5;
-      console.log(`  +5 for business TLD`);
-    } else if (domain.endsWith('.gov')) {
-      score += 30; // High bonus for government
-      console.log(`  +30 for .gov TLD`);
-    }
-    
-    console.log(`  FINAL SCORE: ${score}`);
-    return score;
-  }
-
-  extractTitle(htmlBlock) {
-    const titlePatterns = [
-      /<h3[^>]*>(.*?)<\/h3>/i,
-      /<a[^>]*><h3[^>]*>(.*?)<\/h3><\/a>/i,
-      /<div[^>]*role="heading"[^>]*>(.*?)<\/div>/i,
-      /<h1[^>]*>(.*?)<\/h1>/i,
-      /<h2[^>]*>(.*?)<\/h2>/i,
-      /<title[^>]*>(.*?)<\/title>/i
-    ];
-    
-    for (const pattern of titlePatterns) {
-      const match = htmlBlock.match(pattern);
-      if (match) {
-        const title = this.cleanText(match[1]);
-        if (title.length > 3) {
-          return title;
-        }
-      }
-    }
-    
-    return '';
-  }
-
-  extractDescription(htmlBlock) {
-    const descPatterns = [
-      /<span[^>]*class="[^"]*st[^"]*"[^>]*>(.*?)<\/span>/i,
-      /<div[^>]*class="[^"]*s[^"]*"[^>]*>(.*?)<\/div>/i,
-      /<p[^>]*>(.*?)<\/p>/i,
-      /<span[^>]*data-ved[^>]*>(.*?)<\/span>/i,
-      /<div[^>]*data-content-feature[^>]*>(.*?)<\/div>/i
-    ];
-    
-    for (const pattern of descPatterns) {
-      const match = htmlBlock.match(pattern);
-      if (match) {
-        const text = this.cleanText(match[1]);
-        if (text.length > 10) {
-          return text;
-        }
-      }
-    }
-    
-    return '';
-  }
-
-  extractVisibleText(htmlBlock) {
-    return htmlBlock
-      .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
-      .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
-      .replace(/<[^>]+>/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim();
   }
 
   cleanText(text) {
@@ -614,47 +476,6 @@ Respond with just the domain name or "NONE".`;
       .replace(/&[a-zA-Z0-9#]+;/g, ' ')
       .replace(/\s+/g, ' ')
       .trim();
-  }
-
-  deduplicateDomainsWithBestContext(domainsWithContext) {
-    const domainMap = new Map();
-    
-    domainsWithContext.forEach(item => {
-      const domain = item.domain;
-      
-      if (!domainMap.has(domain)) {
-        domainMap.set(domain, item);
-      } else {
-        const existing = domainMap.get(domain);
-        const contextScore = this.scoreContext(item.context);
-        const existingScore = this.scoreContext(existing.context);
-        
-        if (contextScore > existingScore) {
-          domainMap.set(domain, item);
-        }
-      }
-    });
-    
-    return Array.from(domainMap.values());
-  }
-
-  scoreContext(context) {
-    let score = 0;
-    
-    // Earlier results get much higher scores
-    score += Math.max(0, 20 - context.position);
-    
-    // More context text gets higher scores
-    score += Math.min(10, context.fullText.length / 80);
-    
-    // Having title and description gets bonus
-    if (context.title && context.title.length > 5) score += 8;
-    if (context.description && context.description.length > 10) score += 5;
-    
-    // Bonus for href source (direct links are more reliable)
-    if (context.source === 'href_direct') score += 5;
-    
-    return score;
   }
 
   normalizeCompanyName(companyName) {
