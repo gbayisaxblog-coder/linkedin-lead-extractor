@@ -1,4 +1,4 @@
-console.log('🚀 [CONTENT] LinkedIn Lead Extractor v2.0 - FINAL WORKING VERSION');
+console.log('🚀 [CONTENT] LinkedIn Lead Extractor v2.0 - PERFECT WORKING VERSION');
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   console.log('📨 [CONTENT] Message received:', request.action);
@@ -82,11 +82,11 @@ async function extractWithPerfectPagination(maxPages, fileId, fileName) {
       
       console.log(`[CONTENT] ✅ Page ${currentPage}: ${pageResult.newLeads.length} NEW, ${pageResult.duplicates} duplicates, ${pageResult.failed} failed`);
       
-      // Save only NEW leads to database
+      // Save only NEW leads to database in small batches
       if (pageResult.newLeads.length > 0) {
         updatePersistentStats(currentPage, maxPages, `Saving ${pageResult.newLeads.length} NEW leads to database...`, totalStats);
         
-        const savedCount = await sendLeadsToDatabase(pageResult.newLeads, fileId, fileName);
+        const savedCount = await sendLeadsInBatches(pageResult.newLeads, fileId, fileName);
         totalSaved += savedCount;
         totalStats.saved += savedCount;
         
@@ -151,6 +151,79 @@ async function extractWithPerfectPagination(maxPages, fileId, fileName) {
   }
 }
 
+// ✅ NEW APPROACH: Send leads in small batches to avoid timeouts
+async function sendLeadsInBatches(leads, fileId, fileName) {
+  console.log(`[CONTENT] 📤 Sending ${leads.length} leads in batches to avoid timeouts...`);
+  
+  const batchSize = 3; // Send 3 leads at a time
+  let totalSaved = 0;
+  
+  for (let i = 0; i < leads.length; i += batchSize) {
+    const batch = leads.slice(i, i + batchSize);
+    console.log(`[CONTENT] 📦 Sending batch ${Math.floor(i / batchSize) + 1}: ${batch.length} leads`);
+    
+    try {
+      const batchSaved = await sendSingleBatch(batch, fileId, fileName, i + 1);
+      totalSaved += batchSaved;
+      console.log(`[CONTENT] ✅ Batch saved: ${batchSaved}/${batch.length} leads`);
+      
+      // Small delay between batches
+      if (i + batchSize < leads.length) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+      
+    } catch (batchError) {
+      console.error(`[CONTENT] ❌ Batch ${Math.floor(i / batchSize) + 1} failed:`, batchError.message);
+    }
+  }
+  
+  console.log(`[CONTENT] 🎯 Total saved from all batches: ${totalSaved}/${leads.length}`);
+  return totalSaved;
+}
+
+async function sendSingleBatch(batch, fileId, fileName, batchNumber) {
+  try {
+    const response = await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error(`Batch ${batchNumber} timeout`));
+      }, 8000); // Short timeout for small batches
+      
+      chrome.runtime.sendMessage({ 
+        action: 'sendToDatabase', 
+        payload: {
+          leads: batch,
+          fileId: fileId,
+          fileName: fileName,
+          userId: `chrome_extension_batch_${batchNumber}`
+        }
+      }, (response) => {
+        clearTimeout(timeout);
+        
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message));
+        } else if (!response) {
+          reject(new Error('No response'));
+        } else {
+          resolve(response);
+        }
+      });
+    });
+    
+    if (response && response.success) {
+      const insertedCount = response.result.insertedCount || 0;
+      console.log(`[CONTENT] ✅ Batch ${batchNumber} success: ${insertedCount} inserted`);
+      return insertedCount;
+    } else {
+      console.error(`[CONTENT] ❌ Batch ${batchNumber} failed:`, response?.error);
+      return 0;
+    }
+    
+  } catch (error) {
+    console.error(`[CONTENT] ❌ Batch ${batchNumber} error:`, error.message);
+    return 0;
+  }
+}
+
 async function goToNextPagePerfect(currentPageNum) {
   try {
     console.log(`[CONTENT] 🔍 Perfect navigation from page ${currentPageNum} to ${currentPageNum + 1}`);
@@ -186,22 +259,10 @@ async function goToNextPagePerfect(currentPageNum) {
     
     if (!nextButton || nextButton.disabled) {
       console.log('[CONTENT] ❌ No next page button found');
-      
-      // Debug pagination state
-      const allButtons = document.querySelectorAll('.artdeco-pagination button');
-      console.log('[CONTENT] 🔍 Available buttons:');
-      allButtons.forEach((btn, i) => {
-        console.log(`[CONTENT]   ${i + 1}: "${btn.textContent.trim()}" - disabled: ${btn.disabled}`);
-      });
-      
       return false;
     }
     
     console.log(`[CONTENT] ✅ Found next page button: "${nextButton.textContent.trim()}"`);
-    
-    // Store current URL before clicking
-    const currentUrl = window.location.href;
-    console.log(`[CONTENT] 📋 Current URL before click: ${currentUrl}`);
     
     // Click the button
     nextButton.click();
@@ -220,9 +281,9 @@ async function waitForPageLoadAndScrollTop(expectedPageNum) {
   
   return new Promise((resolve) => {
     let attempts = 0;
-    const maxAttempts = 40; // Increased timeout
+    const maxAttempts = 40;
     
-    const checkInterval = setInterval(async () => {
+    const checkInterval = setInterval(() => {
       attempts++;
       
       // Check URL for page number
@@ -271,16 +332,14 @@ async function waitForPageLoadAndScrollTop(expectedPageNum) {
       if (attempts >= maxAttempts) {
         clearInterval(checkInterval);
         console.log(`[CONTENT] ⏰ Page load timeout after ${attempts} attempts`);
-        console.log(`[CONTENT] 🔍 Final state: urlPage=${urlPageNum}, paginationPage=${paginationPageNum}, expectedPage=${expectedPageNum}`);
         resolve(false);
         return;
       }
       
       if (attempts % 10 === 0) {
         console.log(`[CONTENT] ⏳ Waiting for page ${expectedPageNum}... attempt ${attempts}/${maxAttempts}`);
-        console.log(`[CONTENT] 🔍 Status: urlPage=${urlPageNum}, paginationPage=${paginationPageNum}, profiles=${hasProfiles}, ready=${documentReady}, names=${hasValidNames}, loading=${!!isLoading}`);
       }
-    }, 500); // Check more frequently
+    }, 500);
   });
 }
 
@@ -417,7 +476,7 @@ async function checkPageDuplicates(leads) {
       const timeout = setTimeout(() => {
         console.log('[CONTENT] ⏰ Duplicate check timeout, assuming all new');
         resolve({ success: false });
-      }, 15000);
+      }, 10000); // Shorter timeout
       
       chrome.runtime.sendMessage({ 
         action: 'checkDuplicates', 
@@ -448,36 +507,31 @@ async function checkPageDuplicates(leads) {
   }
 }
 
-async function sendLeadsToDatabase(leads, fileId, fileName) {
+// ✅ BULLETPROOF SINGLE BATCH SENDER
+async function sendSingleBatch(batch, fileId, fileName, batchNumber) {
   try {
-    console.log(`[CONTENT] 📤 Sending ${leads.length} NEW leads to database...`);
+    console.log(`[CONTENT] 📦 Sending batch ${batchNumber}: ${batch.length} leads`);
     
-    // ✅ SHORTER TIMEOUT with retry logic
     const response = await new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
-        console.error('[CONTENT] ❌ Database send timeout after 15 seconds');
-        reject(new Error('Database send timeout'));
-      }, 15000); // Reduced from 30s to 15s
+        reject(new Error(`Batch ${batchNumber} timeout`));
+      }, 6000); // Very short timeout for small batches
       
       chrome.runtime.sendMessage({ 
         action: 'sendToDatabase', 
         payload: {
-          leads: leads,
+          leads: batch,
           fileId: fileId,
           fileName: fileName,
-          userId: 'chrome_extension_user'
+          userId: `chrome_batch_${batchNumber}`
         }
       }, (response) => {
         clearTimeout(timeout);
         
-        console.log(`[CONTENT] 📡 Background response received:`, response);
-        
         if (chrome.runtime.lastError) {
-          console.error('[CONTENT] ❌ Chrome runtime error:', chrome.runtime.lastError);
           reject(new Error(chrome.runtime.lastError.message));
         } else if (!response) {
-          console.error('[CONTENT] ❌ No response from background script');
-          reject(new Error('No response from background script'));
+          reject(new Error('No response'));
         } else {
           resolve(response);
         }
@@ -486,91 +540,16 @@ async function sendLeadsToDatabase(leads, fileId, fileName) {
     
     if (response && response.success) {
       const insertedCount = response.result.insertedCount || 0;
-      const skippedCount = response.result.skippedCount || 0;
-      console.log(`[CONTENT] ✅ Database save successful: ${insertedCount} inserted, ${skippedCount} skipped`);
+      console.log(`[CONTENT] ✅ Batch ${batchNumber} success: ${insertedCount}/${batch.length} inserted`);
       return insertedCount;
     } else {
-      console.error(`[CONTENT] ❌ Database save failed:`, response?.error);
-      
-      // ✅ RETRY LOGIC: Try once more if first attempt fails
-      console.log(`[CONTENT] 🔄 Retrying database save for ${leads.length} leads...`);
-      
-      try {
-        const retryResponse = await new Promise((resolve, reject) => {
-          const retryTimeout = setTimeout(() => {
-            reject(new Error('Retry timeout'));
-          }, 10000); // Shorter retry timeout
-          
-          chrome.runtime.sendMessage({ 
-            action: 'sendToDatabase', 
-            payload: {
-              leads: leads,
-              fileId: fileId,
-              fileName: fileName,
-              userId: 'chrome_extension_user_retry'
-            }
-          }, (response) => {
-            clearTimeout(retryTimeout);
-            if (chrome.runtime.lastError) {
-              reject(new Error(chrome.runtime.lastError.message));
-            } else {
-              resolve(response);
-            }
-          });
-        });
-        
-        if (retryResponse && retryResponse.success) {
-          const retryInserted = retryResponse.result.insertedCount || 0;
-          console.log(`[CONTENT] ✅ Retry successful: ${retryInserted} inserted`);
-          return retryInserted;
-        } else {
-          console.error(`[CONTENT] ❌ Retry also failed:`, retryResponse?.error);
-          return 0;
-        }
-      } catch (retryError) {
-        console.error(`[CONTENT] ❌ Retry error:`, retryError.message);
-        return 0;
-      }
+      console.error(`[CONTENT] ❌ Batch ${batchNumber} failed:`, response?.error);
+      return 0;
     }
     
   } catch (error) {
-    console.error('[CONTENT] ❌ Database send error:', error);
-    
-    // ✅ FALLBACK: Try one more time with different approach
-    console.log(`[CONTENT] 🔄 Final fallback attempt for ${leads.length} leads...`);
-    
-    try {
-      const fallbackResponse = await new Promise((resolve, reject) => {
-        const fallbackTimeout = setTimeout(() => {
-          reject(new Error('Fallback timeout'));
-        }, 5000); // Very short timeout for fallback
-        
-        chrome.runtime.sendMessage({ 
-          action: 'sendToDatabase', 
-          payload: {
-            leads: leads.slice(0, 10), // Send only first 10 leads as fallback
-            fileId: fileId,
-            fileName: fileName,
-            userId: 'chrome_extension_fallback'
-          }
-        }, (response) => {
-          clearTimeout(fallbackTimeout);
-          resolve(response || { success: false });
-        });
-      });
-      
-      if (fallbackResponse && fallbackResponse.success) {
-        const fallbackInserted = fallbackResponse.result.insertedCount || 0;
-        console.log(`[CONTENT] ✅ Fallback successful: ${fallbackInserted} inserted`);
-        return fallbackInserted;
-      } else {
-        console.error(`[CONTENT] ❌ All attempts failed for ${leads.length} leads`);
-        return 0;
-      }
-    } catch (fallbackError) {
-      console.error(`[CONTENT] ❌ Final fallback failed:`, fallbackError.message);
-      return 0;
-    }
+    console.error(`[CONTENT] ❌ Batch ${batchNumber} error:`, error.message);
+    return 0;
   }
 }
 
@@ -866,4 +845,4 @@ function removePersistentStats() {
   }
 }
 
-console.log('✅ [CONTENT] Content script ready with perfect pagination and duplicate detection');
+console.log('✅ [CONTENT] Content script ready - BATCH SENDING APPROACH');
