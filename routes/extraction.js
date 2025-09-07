@@ -1,9 +1,33 @@
 const express = require('express');
 const { supabase } = require('../utils/database');
-const { domainQueue } = require('../utils/queue'); // ✅ ADD THIS LINE
 const router = express.Router();
 
-// Bulletproof extract route (FIXED - add domain queuing)
+// BULLETPROOF QUEUE ACCESS - get queue when needed, not at module load
+async function queueDomainJob(leadId, company) {
+  try {
+    // Get queue at runtime to avoid undefined issues
+    const { domainQueue } = require('../utils/queue');
+    
+    if (!domainQueue) {
+      console.log(`⚠️ Domain queue not initialized yet for lead ${leadId}`);
+      return false;
+    }
+    
+    await domainQueue.add('findDomain', {
+      leadId: leadId,
+      company: company
+    });
+    
+    console.log(`🔄 Queued domain search for lead ${leadId}: ${company}`);
+    return true;
+    
+  } catch (error) {
+    console.error(`❌ Queue error for lead ${leadId}:`, error.message);
+    return false;
+  }
+}
+
+// Bulletproof extract route
 router.post('/extract', async (req, res) => {
   console.log('=== EXTRACTION REQUEST ===');
   
@@ -67,15 +91,10 @@ router.post('/extract', async (req, res) => {
           console.log(`✅ [${i + 1}] Success: ID ${leadId}`);
           insertedCount++;
           
-          // ✅ ADD DOMAIN QUEUING HERE
-          try {
-            await domainQueue.add('findDomain', {
-              leadId: leadId,
-              company: company
-            });
-            console.log(`🔄 [${i + 1}] Queued domain search for: ${company}`);
-          } catch (queueError) {
-            console.error(`❌ [${i + 1}] Queue error:`, queueError.message);
+          // BULLETPROOF DOMAIN QUEUING
+          const queued = await queueDomainJob(leadId, company);
+          if (!queued) {
+            console.log(`⚠️ [${i + 1}] Could not queue domain job for: ${company}`);
           }
           
         } else {
@@ -107,14 +126,14 @@ router.post('/extract', async (req, res) => {
   }
 });
 
-// Get stats (UPDATED to show domain progress)
+// Get stats
 router.get('/status/:fileId', async (req, res) => {
   try {
     const { fileId } = req.params;
     
     const { data: leads, error } = await supabase
       .from('leads')
-      .select('status, domain, ceo_name') // ✅ ADD domain to select
+      .select('status, domain, ceo_name')
       .eq('file_id', fileId);
     
     if (error) {
@@ -124,10 +143,10 @@ router.get('/status/:fileId', async (req, res) => {
     res.json({
       current_total: leads.length,
       pending: leads.filter(l => l.status === 'pending').length,
-      processing: leads.filter(l => l.status === 'processing').length, // ✅ ADD processing status
+      processing: leads.filter(l => l.status === 'processing').length,
       completed: leads.filter(l => l.status === 'completed').length,
-      failed: leads.filter(l => l.status === 'failed').length, // ✅ ADD failed status
-      with_domain: leads.filter(l => l.domain).length, // ✅ ADD domain count
+      failed: leads.filter(l => l.status === 'failed').length,
+      with_domain: leads.filter(l => l.domain).length,
       with_ceo: leads.filter(l => l.ceo_name).length
     });
     
@@ -136,7 +155,7 @@ router.get('/status/:fileId', async (req, res) => {
   }
 });
 
-// Check duplicates route (keep as is)
+// Check duplicates route
 router.post('/check-duplicates', async (req, res) => {
   try {
     const { leads } = req.body;
