@@ -1,18 +1,20 @@
-// workers/domainWorker.js - ENHANCED WITH IMMEDIATE DB UPDATES
-const BrightDataService = require('../services/brightdata');
+// workers/domainWorker.js - UPDATED TO USE DATABLIST
+const DatablistService = require('../services/datablist'); // CHANGED: Use Datablist instead of BrightData
+const BrightDataService = require('../services/brightdata'); // Keep for CEO finding
 const cache = require('../services/cache');
 const { supabase } = require('../utils/database');
 
-const brightData = new BrightDataService();
+const datablist = new DatablistService(); // NEW: Datablist for domains
+const brightData = new BrightDataService(); // Keep for CEO finding
 
 module.exports = async function(job) {
   const { leadId, company, userId } = job.data;
   
-  console.log(`🌐 Domain worker started for lead ${leadId}: ${company}`);
+  console.log(`🌐 Domain worker (Datablist) started for lead ${leadId}: ${company}`);
   console.log(`🔍 Worker timestamp: ${new Date().toISOString()}`);
   
   try {
-    // STEP 1: Update status to processing with detailed logging
+    // STEP 1: Update status to processing
     console.log(`📝 STEP 1: Updating lead ${leadId} to processing...`);
     const { data: statusUpdate, error: statusError } = await supabase
       .from('leads')
@@ -41,13 +43,13 @@ module.exports = async function(job) {
       console.error(`⚠️ Cache error:`, cacheError.message);
     }
     
-    // STEP 3: Find domain if not cached
+    // STEP 3: Find domain if not cached - NOW USING DATABLIST
     if (!domain) {
-      console.log(`🔍 STEP 3: Searching for domain of: ${company}`);
+      console.log(`🔍 STEP 3: Using Datablist to find domain for: ${company}`);
       
       try {
-        domain = await brightData.findDomain(company);
-        console.log(`🔍 BrightData result: ${domain || 'No domain found'}`);
+        domain = await datablist.findDomain(company); // CHANGED: Using Datablist
+        console.log(`🔍 Datablist result: ${domain || 'No domain found'}`);
         
         if (domain) {
           try {
@@ -58,7 +60,7 @@ module.exports = async function(job) {
           }
         }
       } catch (domainError) {
-        console.error(`❌ Domain search error:`, domainError.message);
+        console.error(`❌ Datablist domain search error:`, domainError.message);
         domain = null;
       }
     } else {
@@ -88,7 +90,7 @@ module.exports = async function(job) {
         console.log(`🎉 DATABASE IMMEDIATELY UPDATED with domain: ${domain}`);
         console.log(`✅ Update confirmation:`, domainUpdate);
         
-        // STEP 5: Queue CEO job
+        // STEP 5: Queue CEO job (still using BrightData for CEO)
         console.log(`🔄 STEP 5: Queueing CEO job...`);
         
         try {
