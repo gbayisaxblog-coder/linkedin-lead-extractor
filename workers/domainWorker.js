@@ -1,35 +1,34 @@
-// workers/domainWorker.js - UPDATED TO USE DATABLIST
-const DatablistService = require('../services/datablist'); // CHANGED: Use Datablist instead of BrightData
-const BrightDataService = require('../services/brightdata'); // Keep for CEO finding
+const { createClient } = require('@supabase/supabase-js');
+const datablistService = require('../services/datablist');
 const cache = require('../services/cache');
-const { supabase } = require('../utils/database');
 
-const datablist = new DatablistService(); // NEW: Datablist for domains
-const brightData = new BrightDataService(); // Keep for CEO finding
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_KEY
+);
 
 module.exports = async function(job) {
-  const { leadId, company, userId } = job.data;
+  const { leadId, company, fullName } = job.data;
   
-  console.log(`🌐 Domain worker (Datablist) started for lead ${leadId}: ${company}`);
+  console.log(`🌐 Domain worker started for lead ${leadId}: ${company}`);
   console.log(`🔍 Worker timestamp: ${new Date().toISOString()}`);
   
   try {
     // STEP 1: Update status to processing
     console.log(`📝 STEP 1: Updating lead ${leadId} to processing...`);
-    const { data: statusUpdate, error: statusError } = await supabase
+    const { error: statusError } = await supabase
       .from('leads')
       .update({ 
         status: 'processing',
         updated_at: new Date().toISOString()
       })
-      .eq('id', leadId)
-      .select();
+      .eq('id', leadId);
     
     if (statusError) {
       console.error(`❌ Failed to update status:`, statusError);
       throw statusError;
     }
-    console.log(`✅ Status updated to processing:`, statusUpdate);
+    console.log(`✅ Status updated to processing`);
     
     // STEP 2: Check cache
     const cacheKey = `domain:${company.toLowerCase().replace(/[^a-z0-9]/g, '')}`;
@@ -43,17 +42,18 @@ module.exports = async function(job) {
       console.error(`⚠️ Cache error:`, cacheError.message);
     }
     
-    // STEP 3: Find domain if not cached - NOW USING DATABLIST
+    // STEP 3: Find domain if not cached - Using Datablist
     if (!domain) {
       console.log(`🔍 STEP 3: Using Datablist to find domain for: ${company}`);
       
       try {
-        domain = await datablist.findDomain(company); // CHANGED: Using Datablist
+        const result = await datablistService.findCompanyDomain(company);
+        domain = result?.domain;
         console.log(`🔍 Datablist result: ${domain || 'No domain found'}`);
         
         if (domain) {
           try {
-            await cache.set(cacheKey, domain, 604800);
+            await cache.set(cacheKey, domain, 604800); // Cache for 7 days
             console.log(`✅ Domain cached: ${domain}`);
           } catch (cacheSetError) {
             console.error(`⚠️ Cache set error:`, cacheSetError.message);
@@ -67,94 +67,73 @@ module.exports = async function(job) {
       console.log(`✅ Using cached domain: ${domain}`);
     }
     
-    // STEP 4: IMMEDIATE database update with domain
+    // STEP 4: Update database with domain and queue email job
     if (domain) {
-      console.log(`📝 STEP 4: IMMEDIATELY updating database with domain: ${domain}`);
+      console.log(`📝 STEP 4: Updating database with domain: ${domain}`);
+      
+      const { error: domainUpdateError } = await supabase
+        .from('leads')
+        .update({
+          domain: domain,
+          status: 'domain_found',
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', leadId);
+      
+      if (domainUpdateError) {
+        console.error(`❌ CRITICAL: Database update failed:`, domainUpdateError);
+        throw domainUpdateError;
+      }
+      
+      console.log(`🎉 DATABASE UPDATED with domain: ${domain}`);
+      
+      // STEP 5: Queue email job
+      console.log(`🔄 STEP 5: Queueing email job...`);
       
       try {
-        const { data: domainUpdate, error: domainUpdateError } = await supabase
-          .from('leads')
-          .update({
-            domain: domain,
-            status: 'processing', // Keep processing until CEO is found
-            updated_at: new Date().toISOString()
-          })
-          .eq('id', leadId)
-          .select();
+        const queueModule = require('../utils/queue');
+        const emailQueue = queueModule.getEmailQueue ? queueModule.getEmailQueue() : queueModule.emailQueue;
         
-        if (domainUpdateError) {
-          console.error(`❌ CRITICAL: Database update failed:`, domainUpdateError);
-          throw domainUpdateError;
+        if (emailQueue) {
+          const emailJobData = {
+            leadId,
+            fullName,
+            domain
+          };
+          
+          const emailJob = await emailQueue.add('find-email', emailJobData, {
+            delay: Math.random() * 2000
+          });
+          
+          console.log(`✅ Email job ${emailJob.id} queued for ${fullName}`);
+        } else {
+          console.error(`❌ Email queue not available`);
         }
-        
-        console.log(`🎉 DATABASE IMMEDIATELY UPDATED with domain: ${domain}`);
-        console.log(`✅ Update confirmation:`, domainUpdate);
-        
-        // STEP 5: Queue CEO job (still using BrightData for CEO)
-        console.log(`🔄 STEP 5: Queueing CEO job...`);
-        
-        try {
-          const { ceoQueue } = require('../utils/queue');
-          if (ceoQueue) {
-            const ceoJobData = {
-              leadId,
-              domain,
-              company,
-              userId: userId || 'system',
-              retryCount: 0
-            };
-            
-            console.log(`🔄 CEO job data:`, ceoJobData);
-            
-            const ceoJob = await ceoQueue.add('find-ceo', ceoJobData, {
-              delay: Math.random() * 3000
-            });
-            
-            console.log(`✅ CEO job ${ceoJob.id} queued for ${domain}`);
-          } else {
-            console.error(`❌ CEO queue not available`);
-          }
-        } catch (ceoQueueError) {
-          console.error(`❌ CEO queue error:`, ceoQueueError.message);
-        }
-        
-        console.log(`🎉 DOMAIN WORKER COMPLETE: ${company} → ${domain}`);
-        return { success: true, domain, leadId, company };
-        
-      } catch (dbError) {
-        console.error(`❌ CRITICAL DATABASE ERROR:`, dbError);
-        throw dbError;
+      } catch (emailQueueError) {
+        console.error(`❌ Email queue error:`, emailQueueError.message);
       }
+      
+      console.log(`🎉 DOMAIN WORKER COMPLETE: ${company} → ${domain}`);
+      return { success: true, domain, leadId, company };
       
     } else {
-      // STEP 6: Mark as failed immediately
+      // STEP 6: Mark as failed
       console.log(`📝 STEP 6: No domain found, marking as failed...`);
       
-      try {
-        const { data: failUpdate, error: failError } = await supabase
-          .from('leads')
-          .update({
-            status: 'failed',
-            processed_at: new Date().toISOString()
-          })
-          .eq('id', leadId)
-          .select();
-        
-        if (failError) {
-          console.error(`❌ Failed to mark as failed:`, failError);
-        } else {
-          console.log(`✅ Lead marked as failed:`, failUpdate);
-        }
-      } catch (failUpdateError) {
-        console.error(`❌ Error in failure update:`, failUpdateError);
-      }
+      await supabase
+        .from('leads')
+        .update({
+          status: 'failed',
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', leadId);
       
+      console.log(`✅ Lead marked as failed`);
       return { success: false, error: 'No domain found', leadId, company };
     }
     
   } catch (error) {
     console.error(`❌ DOMAIN WORKER CRITICAL ERROR for ${leadId}:`, error);
-    console.error(`❌ Error stack:`, error.stack);
     
     // Emergency fallback - mark as failed
     try {
@@ -162,7 +141,7 @@ module.exports = async function(job) {
         .from('leads')
         .update({
           status: 'failed',
-          processed_at: new Date().toISOString()
+          updated_at: new Date().toISOString()
         })
         .eq('id', leadId);
       

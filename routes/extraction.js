@@ -1,174 +1,104 @@
-// routes/extraction.js - COMPLETE WITH FIXED CACHE CLEARING
 const express = require('express');
-const { supabase } = require('../utils/database');
+const { createClient } = require('@supabase/supabase-js');
+
 const router = express.Router();
 
-// Bulletproof extract route
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_KEY
+);
+
+// Extract and save leads (simplified)
 router.post('/extract', async (req, res) => {
-  console.log('=== EXTRACTION REQUEST ===');
-  
   try {
+    console.log('📨 Extraction request received');
     const { leads, fileId, fileName } = req.body;
     
-    if (!leads || !Array.isArray(leads)) {
-      return res.status(400).json({ error: 'Invalid leads' });
+    if (!leads || !Array.isArray(leads) || leads.length === 0) {
+      return res.status(400).json({ error: 'No leads provided' });
     }
     
-    console.log(`📊 Processing ${leads.length} leads`);
-    
-    let insertedCount = 0;
-    let skippedCount = 0;
-    const insertedLeads = [];
-    
-    for (let i = 0; i < leads.length; i++) {
-      const lead = leads[i];
-      
-      const fullName = String(lead.fullName || `${lead.firstName || ''} ${lead.lastName || ''}`)
-        .trim()
-        .substring(0, 200);
-      
-      const company = String(lead.company || '')
-        .trim()
-        .substring(0, 200);
-      
-      if (!fullName || !company || fullName.length < 2 || company.length < 2) {
-        console.log(`❌ [${i + 1}] Invalid: "${fullName}" - "${company}"`);
-        skippedCount++;
-        continue;
-      }
-      
-      try {
-        console.log(`💾 [${i + 1}] Inserting: "${fullName}" - "${company}"`);
-        
-        const { data, error } = await supabase
-          .from('leads')
-          .insert([{
-            full_name: fullName,
-            company: company,
-            title: String(lead.title || '').substring(0, 200) || null,
-            location: String(lead.location || '').substring(0, 100) || null,
-            linkedin_url: String(lead.linkedinUrl || '').substring(0, 500) || null,
-            file_id: fileId,
-            file_name: fileName,
-            status: 'pending'
-          }])
-          .select();
-        
-        if (error) {
-          if (error.code === '23505') {
-            console.log(`🔄 [${i + 1}] Duplicate: "${fullName}" - "${company}"`);
-            skippedCount++;
-          } else {
-            console.error(`❌ [${i + 1}] Error:`, error.message);
-            skippedCount++;
-          }
-        } else if (data && data.length > 0) {
-          console.log(`✅ [${i + 1}] Success: ID ${data[0].id}`);
-          insertedCount++;
-          insertedLeads.push({
-            id: data[0].id,
-            fullName,
-            company
-          });
-        } else {
-          console.log(`🔄 [${i + 1}] No data returned`);
-          skippedCount++;
-        }
-        
-      } catch (insertError) {
-        console.error(`❌ [${i + 1}] Exception:`, insertError.message);
-        skippedCount++;
-      }
+    if (!fileId) {
+      return res.status(400).json({ error: 'File ID is required' });
     }
     
-    // Queue domain finding jobs
-    let queuedJobs = 0;
-    if (insertedLeads.length > 0) {
+    console.log(`📊 Processing ${leads.length} leads for file ${fileId}`);
+    
+    // Prepare leads for insertion (only fullname and company)
+    const leadsToInsert = leads.map(lead => ({
+      file_id: fileId,
+      full_name: lead.fullName?.trim(),
+      company: lead.company?.trim(),
+      status: 'pending',
+      created_at: new Date().toISOString()
+    })).filter(lead => lead.full_name && lead.company);
+    
+    console.log(`📊 ${leadsToInsert.length} valid leads after filtering`);
+    
+    if (leadsToInsert.length === 0) {
+      return res.status(400).json({ error: 'No valid leads to process' });
+    }
+    
+    // Insert leads into database
+    const { data: insertedLeads, error: insertError } = await supabase
+      .from('leads')
+      .insert(leadsToInsert)
+      .select('id, full_name, company')
+      .onConflict('full_name, company, file_id')
+      .ignoreDuplicates();
+    
+    if (insertError) {
+      console.error('❌ Database insertion error:', insertError);
+      return res.status(500).json({ error: 'Database insertion failed' });
+    }
+    
+    const insertedCount = insertedLeads?.length || 0;
+    console.log(`✅ Inserted ${insertedCount} new leads`);
+    
+    // Update file statistics
+    await supabase
+      .from('files')
+      .update({ 
+        total_leads: supabase.sql`total_leads + ${insertedCount}`,
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', fileId);
+    
+    // Queue domain finding jobs for new leads
+    if (insertedLeads && insertedLeads.length > 0) {
       try {
         const queueModule = require('../utils/queue');
         const domainQueue = queueModule.getDomainQueue ? queueModule.getDomainQueue() : queueModule.domainQueue;
         
         if (domainQueue) {
-          console.log(`🚀 Queueing ${insertedLeads.length} domain finding jobs...`);
-          
           for (const lead of insertedLeads) {
-            try {
-              const jobData = {
-                leadId: lead.id,
-                company: lead.company,
-                userId: 'chrome_extension'
-              };
-              
-              const job = await domainQueue.add('find-domain', jobData, {
-                delay: Math.random() * 5000
-              });
-              
-              console.log(`🎯 Queued domain job ${job.id} for lead ${lead.id}: ${lead.company}`);
-              queuedJobs++;
-              
-            } catch (queueError) {
-              console.error(`❌ Failed to queue job for lead ${lead.id}:`, queueError.message);
-            }
+            await domainQueue.add('find-domain', {
+              leadId: lead.id,
+              company: lead.company,
+              fullName: lead.full_name
+            });
           }
-        } else {
-          console.log('⚠️ Domain queue not available');
+          console.log(`🚀 Queued ${insertedLeads.length} domain finding jobs`);
         }
       } catch (queueError) {
-        console.error('❌ Queue error:', queueError.message);
+        console.error('⚠️ Failed to queue domain jobs:', queueError.message);
       }
     }
-    
-    console.log('=== SUMMARY ===');
-    console.log(`✅ Inserted: ${insertedCount}`);
-    console.log(`🔄 Skipped: ${skippedCount}`);
-    console.log(`🚀 Queued: ${queuedJobs} domain jobs`);
-    console.log('===============');
     
     res.json({
       success: true,
       insertedCount: insertedCount,
-      skippedCount: skippedCount,
-      totalProcessed: leads.length,
-      queuedJobs: queuedJobs
+      duplicatesSkipped: leads.length - insertedCount,
+      message: `Successfully processed ${insertedCount} leads`
     });
     
   } catch (error) {
-    console.error('❌ Route error:', error);
-    res.status(500).json({ error: error.message });
+    console.error('❌ Extraction error:', error);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
-// Get stats
-router.get('/status/:fileId', async (req, res) => {
-  try {
-    const { fileId } = req.params;
-    
-    const { data: leads, error } = await supabase
-      .from('leads')
-      .select('status, ceo_name, domain')
-      .eq('file_id', fileId);
-    
-    if (error) {
-      return res.status(500).json({ error: error.message });
-    }
-    
-    res.json({
-      current_total: leads.length,
-      pending: leads.filter(l => l.status === 'pending').length,
-      processing: leads.filter(l => l.status === 'processing').length,
-      completed: leads.filter(l => l.status === 'completed').length,
-      failed: leads.filter(l => l.status === 'failed').length,
-      released: leads.filter(l => l.status === 'released').length,
-      with_domain: leads.filter(l => l.domain).length,
-      with_ceo: leads.filter(l => l.ceo_name).length
-    });
-    
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Check duplicates route
+// Check for duplicates
 router.post('/check-duplicates', async (req, res) => {
   try {
     const { leads } = req.body;
@@ -177,401 +107,120 @@ router.post('/check-duplicates', async (req, res) => {
       return res.status(400).json({ error: 'Invalid leads data' });
     }
     
-    console.log(`🔍 Checking ${leads.length} leads for duplicates...`);
-    
-    const duplicateResults = [];
-    
-    for (const lead of leads) {
-      const fullName = String(lead.fullName || '').toLowerCase().trim();
-      const company = String(lead.company || '').toLowerCase().trim();
-      
-      if (!fullName || !company) {
-        duplicateResults.push(false);
-        continue;
-      }
-      
-      const { data: existingLead, error } = await supabase
-        .from('leads')
-        .select('id')
-        .ilike('full_name', fullName)
-        .ilike('company', company)
-        .limit(1);
-      
-      if (error) {
-        console.error('❌ Duplicate check error:', error);
-        duplicateResults.push(false);
-      } else {
-        const isDuplicate = existingLead && existingLead.length > 0;
-        duplicateResults.push(isDuplicate);
+    // Check which leads already exist
+    const duplicateChecks = await Promise.all(
+      leads.map(async (lead) => {
+        const { data } = await supabase
+          .from('leads')
+          .select('id')
+          .eq('full_name', lead.fullName?.trim())
+          .eq('company', lead.company?.trim())
+          .limit(1);
         
-        if (isDuplicate) {
-          console.log(`🔄 Duplicate found: ${fullName} - ${company}`);
-        }
-      }
-    }
+        return data && data.length > 0;
+      })
+    );
     
-    const duplicateCount = duplicateResults.filter(d => d).length;
-    console.log(`✅ Duplicate check complete: ${duplicateCount} duplicates found out of ${leads.length}`);
-    
-    res.json({ duplicates: duplicateResults });
+    res.json({
+      success: true,
+      duplicates: duplicateChecks
+    });
     
   } catch (error) {
     console.error('❌ Duplicate check error:', error);
-    res.json({ duplicates: req.body.leads?.map(() => false) || [] });
+    res.status(500).json({ error: 'Duplicate check failed' });
   }
 });
 
-// Manual trigger to process pending leads
-router.post('/trigger-pending-processing', async (req, res) => {
+// Get file statistics (updated for new schema)
+router.get('/status/:fileId', async (req, res) => {
   try {
-    console.log('🔄 Manual trigger: Processing pending leads...');
+    const { fileId } = req.params;
     
-    const { data: pendingLeads, error } = await supabase
+    const { data: stats, error } = await supabase
       .from('leads')
-      .select('id, company, domain')
-      .eq('status', 'pending')
-      .limit(100);
+      .select('status, email')
+      .eq('file_id', fileId);
     
     if (error) {
-      return res.status(500).json({ error: error.message });
+      throw error;
     }
     
-    console.log(`🔍 Found ${pendingLeads.length} pending leads`);
-    
-    const queueModule = require('../utils/queue');
-    const domainQueue = queueModule.getDomainQueue ? queueModule.getDomainQueue() : queueModule.domainQueue;
-    
-    if (!domainQueue) {
-      return res.status(500).json({ error: 'Domain queue not available' });
-    }
-    
-    let queuedJobs = 0;
-    
-    for (const lead of pendingLeads) {
-      try {
-        await domainQueue.add('find-domain', {
-          leadId: lead.id,
-          company: lead.company,
-          userId: 'manual-pending-trigger'
-        }, {
-          delay: Math.random() * 2000
-        });
-        
-        queuedJobs++;
-        console.log(`🎯 Queued domain job for: ${lead.company}`);
-      } catch (queueError) {
-        console.error(`❌ Failed to queue job for ${lead.id}:`, queueError.message);
-      }
-    }
+    const statusCounts = stats.reduce((acc, lead) => {
+      acc[lead.status] = (acc[lead.status] || 0) + 1;
+      return acc;
+    }, {});
     
     res.json({
-      success: true,
-      message: `Queued ${queuedJobs} domain finding jobs for pending leads`,
-      pendingLeads: pendingLeads.length,
-      queuedJobs: queuedJobs
+      current_total: stats.length,
+      pending: statusCounts.pending || 0,
+      domain_found: statusCounts.domain_found || 0,
+      email_found: statusCounts.email_found || 0,
+      completed: statusCounts.email_found || 0,
+      with_email: statusCounts.email_found || 0,
+      with_ceo: statusCounts.email_found || 0, // For compatibility
+      failed: statusCounts.failed || 0
     });
     
   } catch (error) {
-    console.error('❌ Manual pending trigger error:', error);
-    res.status(500).json({ error: error.message });
+    console.error('❌ Stats error:', error);
+    res.status(500).json({ error: 'Failed to get statistics' });
   }
 });
 
-// Manual trigger to process leads stuck in processing
-router.post('/trigger-stuck-processing', async (req, res) => {
-  try {
-    console.log('🔄 Manual trigger: Reprocessing stuck leads...');
-    
-    // Get leads stuck in processing for more than 10 minutes
-    const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
-    
-    const { data: stuckLeads, error } = await supabase
-      .from('leads')
-      .select('id, company, domain')
-      .eq('status', 'processing')
-      .lt('updated_at', tenMinutesAgo)
-      .limit(100);
-    
-    if (error) {
-      return res.status(500).json({ error: error.message });
-    }
-    
-    console.log(`🔍 Found ${stuckLeads.length} stuck processing leads`);
-    
-    // Reset them to pending
-    if (stuckLeads.length > 0) {
-      const { error: resetError } = await supabase
-        .from('leads')
-        .update({ status: 'pending' })
-        .in('id', stuckLeads.map(l => l.id));
-      
-      if (resetError) {
-        return res.status(500).json({ error: resetError.message });
-      }
-      
-      console.log(`✅ Reset ${stuckLeads.length} stuck leads to pending`);
-    }
-    
-    const queueModule = require('../utils/queue');
-    const domainQueue = queueModule.getDomainQueue ? queueModule.getDomainQueue() : queueModule.domainQueue;
-    const ceoQueue = queueModule.getCeoQueue ? queueModule.getCeoQueue() : queueModule.ceoQueue;
-    
-    let queuedJobs = 0;
-    
-    for (const lead of stuckLeads) {
-      try {
-        if (lead.domain && ceoQueue) {
-          // Has domain, queue CEO job
-          await ceoQueue.add('find-ceo', {
-            leadId: lead.id,
-            domain: lead.domain,
-            company: lead.company,
-            userId: 'manual-stuck-trigger',
-            retryCount: 0
-          });
-          queuedJobs++;
-          console.log(`🎯 Requeued CEO job: ${lead.company} (${lead.domain})`);
-        } else if (domainQueue) {
-          // No domain, queue domain job
-          await domainQueue.add('find-domain', {
-            leadId: lead.id,
-            company: lead.company,
-            userId: 'manual-stuck-trigger'
-          });
-          queuedJobs++;
-          console.log(`🎯 Requeued domain job: ${lead.company}`);
-        }
-      } catch (queueError) {
-        console.error(`❌ Failed to requeue ${lead.id}:`, queueError.message);
-      }
-    }
-    
-    res.json({
-      success: true,
-      message: `Reset and requeued ${queuedJobs} stuck leads`,
-      stuckLeads: stuckLeads.length,
-      queuedJobs: queuedJobs
-    });
-    
-  } catch (error) {
-    console.error('❌ Manual stuck trigger error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// CACHE CLEARING ROUTES
-router.post('/clear-domain-cache', async (req, res) => {
-  try {
-    const { company } = req.body;
-    
-    if (!company) {
-      return res.status(400).json({ error: 'Company name required' });
-    }
-    
-    const cache = require('../services/cache');
-    const cacheKey = `domain:${company.toLowerCase().replace(/[^a-z0-9]/g, '')}`;
-    
-    console.log(`🗑️ Clearing domain cache for: ${company} (key: ${cacheKey})`);
-    
-    const result = await cache.del(cacheKey);
-    
-    res.json({
-      success: true,
-      message: `Domain cache cleared for ${company}`,
-      cacheKey: cacheKey,
-      cleared: result
-    });
-    
-  } catch (error) {
-    console.error('❌ Clear domain cache error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-router.post('/clear-ceo-cache', async (req, res) => {
-  try {
-    const { domain } = req.body;
-    
-    if (!domain) {
-      return res.status(400).json({ error: 'Domain required' });
-    }
-    
-    const cache = require('../services/cache');
-    const cacheKey = `ceo:${domain.toLowerCase()}`;
-    
-    console.log(`🗑️ Clearing CEO cache for: ${domain} (key: ${cacheKey})`);
-    
-    const result = await cache.del(cacheKey);
-    
-    res.json({
-      success: true,
-      message: `CEO cache cleared for ${domain}`,
-      cacheKey: cacheKey,
-      cleared: result
-    });
-    
-  } catch (error) {
-    console.error('❌ Clear CEO cache error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-router.post('/clear-all-cache', async (req, res) => {
-  try {
-    console.log(`🗑️ CLEARING ALL CACHE...`);
-    
-    const cache = require('../services/cache');
-    
-    // Use the correct flushall method
-    const result = await cache.flushall();
-    
-    console.log(`✅ ALL CACHE CLEARED:`, result);
-    
-    res.json({
-      success: true,
-      message: "All cache cleared successfully",
-      result: result,
-      timestamp: new Date().toISOString()
-    });
-    
-  } catch (error) {
-    console.error('❌ Clear all cache error:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: error.message 
-    });
-  }
-});
-
-// Check specific lead status
-router.get('/check-lead/:leadId', async (req, res) => {
-  try {
-    const { leadId } = req.params;
-    
-    console.log(`🔍 Checking lead: ${leadId}`);
-    
-    const { data: lead, error } = await supabase
-      .from('leads')
-      .select('*')
-      .eq('id', leadId)
-      .single();
-    
-    if (error) {
-      return res.status(500).json({ error: error.message });
-    }
-    
-    if (!lead) {
-      return res.status(404).json({ error: 'Lead not found' });
-    }
-    
-    res.json({
-      success: true,
-      lead: {
-        id: lead.id,
-        full_name: lead.full_name,
-        company: lead.company,
-        domain: lead.domain,
-        ceo_name: lead.ceo_name,
-        status: lead.status,
-        retry_count: lead.retry_count,
-        created_at: lead.created_at,
-        updated_at: lead.updated_at,
-        processed_at: lead.processed_at
-      }
-    });
-    
-  } catch (error) {
-    console.error('❌ Check lead error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Manual domain trigger
+// Manual domain finding trigger
 router.post('/trigger-domain-finding', async (req, res) => {
   try {
     const { leadId, company } = req.body;
     
-    if (!leadId || !company) {
-      return res.status(400).json({ error: 'leadId and company required' });
-    }
-    
     const queueModule = require('../utils/queue');
     const domainQueue = queueModule.getDomainQueue ? queueModule.getDomainQueue() : queueModule.domainQueue;
     
     if (!domainQueue) {
-      return res.status(500).json({ error: 'Domain queue not available' });
+      return res.status(503).json({ error: 'Queue system not available' });
     }
     
-    const jobData = {
+    await domainQueue.add('find-domain', {
       leadId: leadId,
-      company: company,
-      userId: 'manual-trigger'
-    };
-    
-    const job = await domainQueue.add('find-domain', jobData);
-    
-    console.log(`🎯 Manual domain job queued: ${job.id} for ${company}`);
-    
-    res.json({
-      success: true,
-      message: `Domain finding job queued for ${company}`,
-      jobId: job.id,
-      leadId,
-      company
+      company: company
     });
     
+    res.json({ success: true, message: 'Domain finding job queued' });
+    
   } catch (error) {
-    console.error('❌ Manual domain trigger error:', error);
-    res.status(500).json({ error: error.message });
+    console.error('❌ Manual trigger error:', error);
+    res.status(500).json({ error: 'Failed to trigger domain finding' });
   }
 });
 
-// Queue status route
+// Queue status
 router.get('/queue-status', async (req, res) => {
   try {
     const queueModule = require('../utils/queue');
     
-    let stats;
-    try {
-      if (queueModule.getQueueStats) {
-        stats = await queueModule.getQueueStats();
-      } else {
-        const domainQueue = queueModule.getDomainQueue ? queueModule.getDomainQueue() : queueModule.domainQueue;
-        const ceoQueue = queueModule.getCeoQueue ? queueModule.getCeoQueue() : queueModule.ceoQueue;
-        
-        if (domainQueue && ceoQueue) {
-          stats = {
-            initialized: queueModule.initialized,
-            domain: {
-              waiting: await domainQueue.getWaiting().then(jobs => jobs.length),
-              active: await domainQueue.getActive().then(jobs => jobs.length),
-              completed: await domainQueue.getCompleted().then(jobs => jobs.length),
-              failed: await domainQueue.getFailed().then(jobs => jobs.length)
-            },
-            ceo: {
-              waiting: await ceoQueue.getWaiting().then(jobs => jobs.length),
-              active: await ceoQueue.getActive().then(jobs => jobs.length),
-              completed: await ceoQueue.getCompleted().then(jobs => jobs.length),
-              failed: await ceoQueue.getFailed().then(jobs => jobs.length)
-            }
-          };
-        } else {
-          stats = { error: 'Queues not available' };
-        }
-      }
-    } catch (statsError) {
-      stats = { error: statsError.message };
-    }
+    const domainQueue = queueModule.getDomainQueue ? queueModule.getDomainQueue() : queueModule.domainQueue;
+    const emailQueue = queueModule.getEmailQueue ? queueModule.getEmailQueue() : queueModule.emailQueue;
     
-    res.json({
-      success: true,
-      queues: stats,
-      timestamp: new Date().toISOString()
-    });
+    const status = {
+      domain_queue: domainQueue ? {
+        waiting: await domainQueue.getWaiting().then(jobs => jobs.length),
+        active: await domainQueue.getActive().then(jobs => jobs.length),
+        completed: await domainQueue.getCompleted().then(jobs => jobs.length),
+        failed: await domainQueue.getFailed().then(jobs => jobs.length)
+      } : null,
+      email_queue: emailQueue ? {
+        waiting: await emailQueue.getWaiting().then(jobs => jobs.length),
+        active: await emailQueue.getActive().then(jobs => jobs.length),
+        completed: await emailQueue.getCompleted().then(jobs => jobs.length),
+        failed: await emailQueue.getFailed().then(jobs => jobs.length)
+      } : null
+    };
+    
+    res.json({ success: true, queues: status });
     
   } catch (error) {
     console.error('❌ Queue status error:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Failed to get queue status' });
   }
 });
 

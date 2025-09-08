@@ -1,7 +1,7 @@
 {
-  "name": "linkedin-lead-extractor",
-  "version": "2.0.0",
-  "description": "LinkedIn Lead Extractor v2.0",
+  "name": "linkedin-lead-extractor-v3",
+  "version": "3.0.0",
+  "description": "Simplified LinkedIn Lead Extractor with Email Finding",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -16,7 +16,6 @@
     "dotenv": "^16.3.1",
     "express": "^4.18.2",
     "ioredis": "^5.7.0",
-    "openai": "^4.104.0",
     "redis": "^5.8.2"
   },
   "engines": {
