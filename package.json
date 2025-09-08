@@ -1,7 +1,7 @@
 {
-  "name": "linkedin-lead-extractor-v3",
-  "version": "3.0.0",
-  "description": "Simplified LinkedIn Lead Extractor with Email Finding",
+  "name": "simple-linkedin-extractor",
+  "version": "1.0.0",
+  "description": "Simple LinkedIn Lead Extractor - Name and Company Only",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -9,14 +9,10 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.38.0",
-    "axios": "^1.11.0",
-    "bullmq": "^5.58.5",
     "cors": "^2.8.5",
     "csv-stringify": "^6.4.4",
     "dotenv": "^16.3.1",
-    "express": "^4.18.2",
-    "ioredis": "^5.7.0",
-    "redis": "^5.8.2"
+    "express": "^4.18.2"
   },
   "engines": {
     "node": ">=20.0.0"

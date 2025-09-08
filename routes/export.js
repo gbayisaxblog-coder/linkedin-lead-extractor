@@ -1,25 +1,19 @@
 const express = require('express');
-const { createClient } = require('@supabase/supabase-js');
+const { supabase } = require('../utils/database');
 const { stringify } = require('csv-stringify');
 
 const router = express.Router();
 
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_KEY
-);
-
-// Export leads as CSV
+// Export simple CSV
 router.get('/csv/:fileId', async (req, res) => {
   try {
     const { fileId } = req.params;
     
     console.log(`📥 CSV export requested for file: ${fileId}`);
     
-    // Get leads from database
     const { data: leads, error } = await supabase
       .from('leads')
-      .select('full_name, company, domain, email, email_pattern, status, created_at')
+      .select('full_name, company, created_at')
       .eq('file_id', fileId)
       .order('created_at', { ascending: true });
     
@@ -34,25 +28,23 @@ router.get('/csv/:fileId', async (req, res) => {
     
     console.log(`📊 Exporting ${leads.length} leads`);
     
-    // Prepare CSV data
+    // Simple CSV data
     const csvData = leads.map(lead => ({
       'Full Name': lead.full_name || '',
       'Company': lead.company || '',
-      'Domain': lead.domain || '',
-      'Email': lead.email || '',
-      'Email Pattern': lead.email_pattern || '',
-      'Status': lead.status || '',
+      'Domain': '', // Empty for Datablist to fill
+      'Email': '', // Empty for Google Sheets to fill
+      'Email Pattern': '', // Empty for Google Sheets to fill
+      'CEO Name': '', // Empty for Google Sheets to fill
       'Created At': lead.created_at ? new Date(lead.created_at).toISOString() : ''
     }));
     
-    // Set response headers for CSV download
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', `attachment; filename="linkedin_leads_${fileId}.csv"`);
     
-    // Convert to CSV and send
     stringify(csvData, {
       header: true,
-      columns: ['Full Name', 'Company', 'Domain', 'Email', 'Email Pattern', 'Status', 'Created At']
+      columns: ['Full Name', 'Company', 'Domain', 'Email', 'Email Pattern', 'CEO Name', 'Created At']
     }).pipe(res);
     
     console.log('✅ CSV export completed');
