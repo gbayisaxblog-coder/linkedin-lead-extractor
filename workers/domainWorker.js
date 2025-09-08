@@ -1,11 +1,14 @@
 const { createClient } = require('@supabase/supabase-js');
-const datablistService = require('../services/datablist');
+const DatablistService = require('../services/datablist'); // Import the class
 const cache = require('../services/cache');
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_KEY
 );
+
+// Create an instance of the service
+const datablistService = new DatablistService();
 
 module.exports = async function(job) {
   const { leadId, company, fullName, userId } = job.data;
@@ -48,7 +51,7 @@ module.exports = async function(job) {
       console.log(`🔍 STEP 3: Using Datablist to find domain for: ${company}`);
       
       try {
-        // FIXED: Use the correct method name from your existing service
+        // FIXED: Use the correct method with proper instantiation
         domain = await datablistService.findDomain(company);
         console.log(`🔍 Datablist result: ${domain || 'No domain found'}`);
         
@@ -77,7 +80,7 @@ module.exports = async function(job) {
           .from('leads')
           .update({
             domain: domain,
-            status: 'domain_found', // UPDATED: Use new status
+            status: 'domain_found',
             updated_at: new Date().toISOString()
           })
           .eq('id', leadId)
@@ -91,7 +94,7 @@ module.exports = async function(job) {
         console.log(`🎉 DATABASE IMMEDIATELY UPDATED with domain: ${domain}`);
         console.log(`✅ Update confirmation:`, domainUpdate);
         
-        // STEP 5: Queue EMAIL job (UPDATED: Queue email instead of CEO)
+        // STEP 5: Queue EMAIL job
         console.log(`🔄 STEP 5: Queueing EMAIL job...`);
         
         try {
