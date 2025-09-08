@@ -8,7 +8,7 @@ const supabase = createClient(
 );
 
 module.exports = async function(job) {
-  const { leadId, company, fullName } = job.data;
+  const { leadId, company, fullName, userId } = job.data;
   
   console.log(`🌐 Domain worker started for lead ${leadId}: ${company}`);
   console.log(`🔍 Worker timestamp: ${new Date().toISOString()}`);
@@ -16,19 +16,20 @@ module.exports = async function(job) {
   try {
     // STEP 1: Update status to processing
     console.log(`📝 STEP 1: Updating lead ${leadId} to processing...`);
-    const { error: statusError } = await supabase
+    const { data: statusUpdate, error: statusError } = await supabase
       .from('leads')
       .update({ 
         status: 'processing',
         updated_at: new Date().toISOString()
       })
-      .eq('id', leadId);
+      .eq('id', leadId)
+      .select();
     
     if (statusError) {
       console.error(`❌ Failed to update status:`, statusError);
       throw statusError;
     }
-    console.log(`✅ Status updated to processing`);
+    console.log(`✅ Status updated to processing:`, statusUpdate);
     
     // STEP 2: Check cache
     const cacheKey = `domain:${company.toLowerCase().replace(/[^a-z0-9]/g, '')}`;
@@ -47,8 +48,8 @@ module.exports = async function(job) {
       console.log(`🔍 STEP 3: Using Datablist to find domain for: ${company}`);
       
       try {
-        const result = await datablistService.findCompanyDomain(company);
-        domain = result?.domain;
+        // FIXED: Use the correct method name from your existing service
+        domain = await datablistService.findDomain(company);
         console.log(`🔍 Datablist result: ${domain || 'No domain found'}`);
         
         if (domain) {
@@ -67,73 +68,95 @@ module.exports = async function(job) {
       console.log(`✅ Using cached domain: ${domain}`);
     }
     
-    // STEP 4: Update database with domain and queue email job
+    // STEP 4: IMMEDIATE database update with domain
     if (domain) {
-      console.log(`📝 STEP 4: Updating database with domain: ${domain}`);
-      
-      const { error: domainUpdateError } = await supabase
-        .from('leads')
-        .update({
-          domain: domain,
-          status: 'domain_found',
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', leadId);
-      
-      if (domainUpdateError) {
-        console.error(`❌ CRITICAL: Database update failed:`, domainUpdateError);
-        throw domainUpdateError;
-      }
-      
-      console.log(`🎉 DATABASE UPDATED with domain: ${domain}`);
-      
-      // STEP 5: Queue email job
-      console.log(`🔄 STEP 5: Queueing email job...`);
+      console.log(`📝 STEP 4: IMMEDIATELY updating database with domain: ${domain}`);
       
       try {
-        const queueModule = require('../utils/queue');
-        const emailQueue = queueModule.getEmailQueue ? queueModule.getEmailQueue() : queueModule.emailQueue;
+        const { data: domainUpdate, error: domainUpdateError } = await supabase
+          .from('leads')
+          .update({
+            domain: domain,
+            status: 'domain_found', // UPDATED: Use new status
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', leadId)
+          .select();
         
-        if (emailQueue) {
-          const emailJobData = {
-            leadId,
-            fullName,
-            domain
-          };
-          
-          const emailJob = await emailQueue.add('find-email', emailJobData, {
-            delay: Math.random() * 2000
-          });
-          
-          console.log(`✅ Email job ${emailJob.id} queued for ${fullName}`);
-        } else {
-          console.error(`❌ Email queue not available`);
+        if (domainUpdateError) {
+          console.error(`❌ CRITICAL: Database update failed:`, domainUpdateError);
+          throw domainUpdateError;
         }
-      } catch (emailQueueError) {
-        console.error(`❌ Email queue error:`, emailQueueError.message);
+        
+        console.log(`🎉 DATABASE IMMEDIATELY UPDATED with domain: ${domain}`);
+        console.log(`✅ Update confirmation:`, domainUpdate);
+        
+        // STEP 5: Queue EMAIL job (UPDATED: Queue email instead of CEO)
+        console.log(`🔄 STEP 5: Queueing EMAIL job...`);
+        
+        try {
+          const queueModule = require('../utils/queue');
+          const emailQueue = queueModule.getEmailQueue ? queueModule.getEmailQueue() : queueModule.emailQueue;
+          
+          if (emailQueue) {
+            const emailJobData = {
+              leadId,
+              fullName,
+              domain,
+              userId: userId || 'system'
+            };
+            
+            console.log(`🔄 Email job data:`, emailJobData);
+            
+            const emailJob = await emailQueue.add('find-email', emailJobData, {
+              delay: Math.random() * 3000
+            });
+            
+            console.log(`✅ Email job ${emailJob.id} queued for ${fullName} at ${domain}`);
+          } else {
+            console.error(`❌ Email queue not available`);
+          }
+        } catch (emailQueueError) {
+          console.error(`❌ Email queue error:`, emailQueueError.message);
+        }
+        
+        console.log(`🎉 DOMAIN WORKER COMPLETE: ${company} → ${domain}`);
+        return { success: true, domain, leadId, company };
+        
+      } catch (dbError) {
+        console.error(`❌ CRITICAL DATABASE ERROR:`, dbError);
+        throw dbError;
       }
       
-      console.log(`🎉 DOMAIN WORKER COMPLETE: ${company} → ${domain}`);
-      return { success: true, domain, leadId, company };
-      
     } else {
-      // STEP 6: Mark as failed
+      // STEP 6: Mark as failed immediately
       console.log(`📝 STEP 6: No domain found, marking as failed...`);
       
-      await supabase
-        .from('leads')
-        .update({
-          status: 'failed',
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', leadId);
+      try {
+        const { data: failUpdate, error: failError } = await supabase
+          .from('leads')
+          .update({
+            status: 'failed',
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', leadId)
+          .select();
+        
+        if (failError) {
+          console.error(`❌ Failed to mark as failed:`, failError);
+        } else {
+          console.log(`✅ Lead marked as failed:`, failUpdate);
+        }
+      } catch (failUpdateError) {
+        console.error(`❌ Error in failure update:`, failUpdateError);
+      }
       
-      console.log(`✅ Lead marked as failed`);
       return { success: false, error: 'No domain found', leadId, company };
     }
     
   } catch (error) {
     console.error(`❌ DOMAIN WORKER CRITICAL ERROR for ${leadId}:`, error);
+    console.error(`❌ Error stack:`, error.stack);
     
     // Emergency fallback - mark as failed
     try {
