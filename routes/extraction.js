@@ -1,4 +1,4 @@
-// routes/extraction.js - COMPLETE WITH CACHE CLEARING
+// routes/extraction.js - COMPLETE WITH FIXED CACHE CLEARING
 const express = require('express');
 const { supabase } = require('../utils/database');
 const router = express.Router();
@@ -418,22 +418,28 @@ router.post('/clear-ceo-cache', async (req, res) => {
 
 router.post('/clear-all-cache', async (req, res) => {
   try {
-    console.log(`🗑️ Clearing ALL cache...`);
+    console.log(`🗑️ CLEARING ALL CACHE...`);
     
     const cache = require('../services/cache');
     
-    // Clear all cache keys that start with 'domain:' or 'ceo:'
+    // Use the correct flushall method
     const result = await cache.flushall();
+    
+    console.log(`✅ ALL CACHE CLEARED:`, result);
     
     res.json({
       success: true,
-      message: `All cache cleared`,
-      result: result
+      message: "All cache cleared successfully",
+      result: result,
+      timestamp: new Date().toISOString()
     });
     
   } catch (error) {
     console.error('❌ Clear all cache error:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ 
+      success: false, 
+      error: error.message 
+    });
   }
 });
 

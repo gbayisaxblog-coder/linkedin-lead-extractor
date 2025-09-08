@@ -1,3 +1,4 @@
+// services/cache.js - FIXED WITH FLUSHALL METHOD
 const redis = require('redis');
 
 class CacheService {
@@ -50,6 +51,44 @@ class CacheService {
       console.error('❌ Cache del error:', error);
       return false;
     }
+  }
+
+  // NEW: Add flushall method
+  async flushall() {
+    try {
+      await this.client.flushAll();
+      console.log(`🧹 ALL CACHE CLEARED`);
+      return 'OK';
+    } catch (error) {
+      console.error('❌ Cache flushall error:', error);
+      return false;
+    }
+  }
+
+  // NEW: Clear specific patterns
+  async clearPattern(pattern) {
+    try {
+      const keys = await this.client.keys(pattern);
+      if (keys.length > 0) {
+        await this.client.del(keys);
+        console.log(`🧹 Cleared ${keys.length} keys matching pattern: ${pattern}`);
+        return keys.length;
+      }
+      return 0;
+    } catch (error) {
+      console.error('❌ Cache clear pattern error:', error);
+      return 0;
+    }
+  }
+
+  // NEW: Clear all domain cache
+  async clearAllDomainCache() {
+    return await this.clearPattern('domain:*');
+  }
+
+  // NEW: Clear all CEO cache
+  async clearAllCEOCache() {
+    return await this.clearPattern('ceo:*');
   }
 }
 
